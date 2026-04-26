@@ -982,7 +982,12 @@ fn render_surface(
                     CursorImageStatus::Named(icon) => *icon,
                     _ => smithay::input::pointer::CursorIcon::Default,
                 };
-                let frame = cursor_theme.get_image(icon, 1, start_time.elapsed());
+                let cursor_scale = output
+                    .current_scale()
+                    .fractional_scale()
+                    .ceil()
+                    .max(1.0) as u32;
+                let frame = cursor_theme.get_image(icon, cursor_scale, start_time.elapsed());
                 let buffer = pointer_images
                     .iter()
                     .find_map(|(image, buffer)| (image == &frame).then_some(buffer.clone()))
@@ -991,7 +996,7 @@ fn render_surface(
                             &frame.pixels_rgba,
                             Fourcc::Argb8888,
                             (frame.width as i32, frame.height as i32),
-                            1,
+                            cursor_scale as i32,
                             Transform::Normal,
                             None,
                         );
@@ -1002,7 +1007,11 @@ fn render_surface(
                     pointer_element.set_buffer(buffer);
                     *current_pointer_image = Some(frame.clone());
                 }
-                (frame.xhot as i32, frame.yhot as i32).into()
+                (
+                    (frame.xhot / cursor_scale) as i32,
+                    (frame.yhot / cursor_scale) as i32,
+                )
+                    .into()
             };
 
             pointer_element.set_status(effective_cursor_status);
