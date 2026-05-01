@@ -283,6 +283,12 @@ pub struct ShojiWM {
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
     pub xwayland_satellite: Option<SatelliteInstance>,
+    /// Refresh rate advertised to Xwayland-like clients through `wl_output.mode`.
+    ///
+    /// This is intentionally compositor-local state rather than true output state. Native
+    /// Wayland clients see each output's real mode, while Xwayland/Xwayland-satellite clients
+    /// get a single selected refresh value that follows the output where the X11 window is
+    /// expected to run.
     pub xwayland_refresh_override_mhz: Arc<AtomicI32>,
 }
 
@@ -726,6 +732,15 @@ impl ShojiWM {
         &self,
         output: &Output,
     ) -> smithay::reexports::wayland_server::backend::GlobalId {
+        // Xwayland currently treats `wl_output.mode.refresh` more like process-global timing
+        // input than per-surface/per-output state. On mixed-Hz setups this can make GLX/EGL X11
+        // clients pace themselves to the wrong monitor even when the Wayland surface has entered
+        // the high-Hz output.
+        //
+        // The Smithay fork exposes a narrow compatibility hook for this: when a client is known
+        // to be Xwayland or an Xwayland bridge, advertise the refresh rate of the output selected
+        // by ShojiWM's window placement/focus logic. Do not apply this to ordinary Wayland
+        // clients; they must continue to see the real mode of every output.
         let refresh_override_mhz = self.xwayland_refresh_override_mhz.clone();
         output.create_global_with_mode_refresh_override::<ShojiWM, _>(
             &self.display_handle,
@@ -751,6 +766,9 @@ impl ShojiWM {
         output: &Output,
         reason: &'static str,
     ) {
+        // Provide a deterministic non-zero fallback before any X11 window exists. This value is
+        // replaced as soon as Xwayland starts near the pointer or an X11/Xwayland-bridge window is
+        // mapped/focused/moved.
         let Some(mode) = output.current_mode() else {
             return;
         };
@@ -773,6 +791,9 @@ impl ShojiWM {
         window: &Window,
         reason: &'static str,
     ) {
+        // Keep the override scoped to windows that actually go through Xwayland. For satellite,
+        // the visible toplevel is an xdg_toplevel from a bridge process, so client data rather
+        // than `window.x11_surface()` is the reliable marker.
         if !self.window_uses_xwayland_refresh_override(window) {
             return;
         }
@@ -783,6 +804,9 @@ impl ShojiWM {
     }
 
     pub fn update_xwayland_refresh_override_from_pointer_or_first(&mut self, reason: &'static str) {
+        // Before the first X11 window is mapped, the pointer output is the best available signal
+        // for where a launcher-triggered Xwayland client will appear. Falling back to the first
+        // output keeps the value defined for headless tests / unusual startup ordering.
         let output = self
             .seat
             .get_pointer()
@@ -808,6 +832,9 @@ impl ShojiWM {
             return;
         }
 
+        // Re-send mode events for every output so already-connected Xwayland clients receive the
+        // new compatibility refresh immediately. The callback installed in `create_output_global`
+        // rewrites only Xwayland-like clients; native Wayland clients still get the real mode.
         info!(
             output = %output.name(),
             previous_refresh_mhz = previous,
@@ -850,6 +877,9 @@ impl ShojiWM {
     }
 
     fn output_for_window(&self, window: &Window) -> Option<Output> {
+        // Prefer largest overlap, because it matches how users perceive "the monitor this window
+        // is on" during cross-output moves. The center/first-output fallbacks only cover degenerate
+        // geometries and early lifecycle states.
         let rect = self.space.element_bbox(window)?;
         self.space
             .outputs()
@@ -874,6 +904,8 @@ impl ShojiWM {
     }
 
     pub fn start_xwayland(&mut self, event_loop: &EventLoop<'static, ShojiWM>) {
+        // Seed from the pointer before spawning Xwayland. Otherwise Xwayland may bind outputs
+        // immediately and cache a low-Hz fallback before the first X11 window exists.
         self.update_xwayland_refresh_override_from_pointer_or_first("xwayland-start");
 
         if satellite_requested() {
@@ -982,6 +1014,9 @@ impl ShojiWM {
                 state.record_event_source_wake("wayland-listener");
                 let client_is_xwayland_bridge = is_xwayland_bridge_client(&client_stream);
                 if client_is_xwayland_bridge {
+                    // xwayland-satellite connects as an ordinary Wayland client, so Smithay's
+                    // built-in XWaylandClientData is not available. Mark it at accept time based
+                    // on peer credentials and seed the override before it binds wl_output globals.
                     state.update_xwayland_refresh_override_from_pointer_or_first(
                         "xwayland-bridge-connect",
                     );
@@ -2356,6 +2391,10 @@ impl ClientData for ClientState {
 }
 
 fn is_xwayland_bridge_client<Fd: AsFd>(fd: Fd) -> bool {
+    // There is no protocol-level "this client is an Xwayland bridge" bit. For the refresh
+    // workaround we need the decision before global binding, so peer credentials are the least
+    // invasive option available here. Keep the match intentionally narrow: this path changes
+    // advertised output refresh and must not catch arbitrary Wayland clients.
     let Ok(credentials) = socket_peercred(fd) else {
         return false;
     };
