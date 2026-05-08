@@ -141,6 +141,8 @@ type RuntimeRequest =
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest;
 
+type RuntimeRequestWithTimestamp = Extract<RuntimeRequest, { nowMs: number }>;
+
 interface EvaluateSuccess {
   requestId: number;
   ok: true;
@@ -381,6 +383,19 @@ function installRuntimeConsoleBridge() {
   return original;
 }
 
+function hasRuntimeTimestamp(request: RuntimeRequest): request is RuntimeRequestWithTimestamp {
+  return "nowMs" in request;
+}
+
+function beginRuntimeTurn(nowMs: number): void {
+  currentSchedulerTimeMs = nowMs;
+  // A runtime turn may evaluate declarations or run user handlers, both of
+  // which can start animations. Synchronizing once at the turn boundary keeps
+  // every newly-created timeline anchored to the compositor timestamp for this
+  // request instead of the previous decoration evaluation.
+  advanceAnimationFrame(nowMs);
+}
+
 async function main() {
   const configPath = process.argv[2];
   const socketPath = process.argv[3];
@@ -438,9 +453,10 @@ async function main() {
 
     try {
       updateOutputState(request.displayState);
+      if (hasRuntimeTimestamp(request)) {
+        beginRuntimeTurn(request.nowMs);
+      }
       if (request.kind === "evaluate") {
-        currentSchedulerTimeMs = request.nowMs;
-        advanceAnimationFrame(request.nowMs);
         const serialized = evaluateSnapshot(decoration, events, request.snapshot);
         const keyBindingConfig = pendingKeyBindingConfigPayload();
         const processConfig = pendingProcessConfigPayload();
@@ -495,7 +511,6 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "startClose") {
-          currentSchedulerTimeMs = request.nowMs;
           const result = startClose(events, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
@@ -511,8 +526,6 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "evaluateCached") {
-          currentSchedulerTimeMs = request.nowMs;
-          advanceAnimationFrame(request.nowMs);
           const result = evaluateCached(request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
@@ -539,8 +552,6 @@ async function main() {
             displayConfig: pendingDisplayConfigPayload(),
           });
         } else if (request.kind === "evaluateLayerEffects") {
-          currentSchedulerTimeMs = request.nowMs;
-          advanceAnimationFrame(request.nowMs);
           const result = evaluateLayerEffects(events, request.outputName, request.layers);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
@@ -557,7 +568,6 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "invokeKeyBinding") {
-          currentSchedulerTimeMs = request.nowMs;
           const result = invokeGlobalKeyBinding(request.bindingId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
@@ -573,7 +583,6 @@ async function main() {
             processActions,
           });
         } else {
-          currentSchedulerTimeMs = request.nowMs;
           const result = invokeHandler(request.windowId, request.handlerId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
@@ -866,9 +875,6 @@ function processSchedulerTick(nowMs: number): {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
 } {
-  currentSchedulerTimeMs = nowMs;
-  const animationsActive = hasActiveAnimations();
-
   for (const [pollId, poll] of polls) {
     if (poll.handle.cancelled) {
       polls.delete(pollId);
