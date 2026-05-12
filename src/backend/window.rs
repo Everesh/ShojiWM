@@ -22,7 +22,7 @@ use smithay::{
         shell::xdg::XdgToplevelSurfaceData,
     },
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{backend::clipped_surface::ClippedSurfaceElement, ssd::ContentClip};
 
@@ -322,6 +322,44 @@ where
             }
 
             elements
+        }
+        WindowSurface::X11(surface) => {
+            AsRenderElements::<R>::render_elements(surface, renderer, location, scale, alpha)
+        }
+    }
+}
+
+pub fn root_surface_elements<R>(
+    window: &Window,
+    renderer: &mut R,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Vec<WaylandSurfaceRenderElement<R>>
+where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    match window.underlying_surface() {
+        WindowSurface::Wayland(surface) => {
+            let render_origin = location - window.geometry().loc.to_physical_precise_round(scale);
+            with_states(surface.wl_surface(), |states| {
+                match WaylandSurfaceRenderElement::from_surface(
+                    renderer,
+                    surface.wl_surface(),
+                    states,
+                    render_origin.to_f64(),
+                    alpha,
+                    Kind::Unspecified,
+                ) {
+                    Ok(Some(element)) => vec![element],
+                    Ok(None) => Vec::new(),
+                    Err(err) => {
+                        warn!("Failed to import root surface: {}", err);
+                        Vec::new()
+                    }
+                }
+            })
         }
         WindowSurface::X11(surface) => {
             AsRenderElements::<R>::render_elements(surface, renderer, location, scale, alpha)

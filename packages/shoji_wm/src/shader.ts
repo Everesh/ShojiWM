@@ -18,6 +18,9 @@ import type {
   NamedTextureHandle,
   ShaderUniformMap,
   EffectInvalidationPolicyHandle,
+  EffectOutsets,
+  WindowEffectHandle,
+  WindowSourceHandle,
 } from "./types";
 
 let assetBaseDir = "/";
@@ -33,6 +36,11 @@ export interface CompileEffectOptions {
     | BlendStageHandle
     | UnitStageHandle
   >;
+}
+
+export interface CompileWindowEffectOptions extends CompileEffectOptions {
+  input: WindowSourceHandle;
+  outsets?: EffectOutsets;
 }
 
 // Base directory for relative asset paths (shaders, images, fonts). Callers
@@ -63,6 +71,13 @@ export function backdropSource(): BackdropSourceHandle {
 
 export function xrayBackdropSource(): XrayBackdropSourceHandle {
   return { kind: "xray-backdrop-source" };
+}
+
+export function windowSource(options: { include?: "full" | "root-surface" } = {}): WindowSourceHandle {
+  return {
+    kind: "window-source",
+    include: options.include ?? "full",
+  };
 }
 
 export function imageSource(path: string): ImageSourceHandle {
@@ -191,5 +206,13 @@ export function compileEffect(options: CompileEffectOptions): CompiledEffectHand
       antiArtifactMargin: 0,
     },
     pipeline: options.pipeline,
+  };
+}
+
+export function compileWindowEffect(options: CompileWindowEffectOptions): WindowEffectHandle {
+  return {
+    kind: "window-effect",
+    effect: compileEffect(options),
+    outsets: options.outsets,
   };
 }

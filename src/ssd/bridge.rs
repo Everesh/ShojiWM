@@ -4,9 +4,10 @@ use super::{
     AlignItems, BackdropBlur, BackgroundEffectConfig, BlendMode, BorderFit, BorderStyle, BoxNode,
     ButtonNode, Color, CompiledEffect, DecorationInteractionHandlers, DecorationNode,
     DecorationNodeKind, DecorationStateChangeHandler, DecorationStyle, Edges, EffectInput,
-    EffectInvalidationPolicy, EffectStage, ImageNode, JustifyContent, LabelNode, LayoutDirection,
-    NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents, PositionOffsets,
-    ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue, StylePosition, WindowAction,
+    EffectInvalidationPolicy, EffectOutsets, EffectStage, ImageNode, JustifyContent, LabelNode,
+    LayoutDirection, NodeTransform, NoiseKind, NoiseStage, Overflow, PointerEvents,
+    PositionOffsets, ShaderEffectNode, ShaderModule, ShaderStage, ShaderUniformValue,
+    StylePosition, WindowAction, WindowEffectConfig, WindowEffectSlot, WindowSourceInclude,
 };
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -127,6 +128,7 @@ pub enum WireAutomaticEffectInvalidationPolicy {
 pub enum WireEffectInput {
     BackdropSource,
     XrayBackdropSource,
+    WindowSource { include: Option<String> },
     ShaderInput(WireShaderStageFields),
     ImageSource { path: String },
     NamedTexture { name: String },
@@ -160,6 +162,37 @@ pub struct WireUnitStageFields {
 }
 
 pub type WireBackgroundEffectConfig = WireCompiledEffect;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireWindowEffectConfig {
+    pub behind: Option<WireWindowEffectSlot>,
+    #[serde(rename = "behindRootSurface")]
+    pub behind_root_surface: Option<WireWindowEffectSlot>,
+    #[serde(rename = "inFront")]
+    pub in_front: Option<WireWindowEffectSlot>,
+    pub replace: Option<WireWindowEffectSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireWindowEffectSlot {
+    pub kind: String,
+    pub effect: WireCompiledEffect,
+    pub outsets: Option<WireEffectOutsets>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum WireEffectOutsets {
+    Uniform(i32),
+    Edges {
+        left: Option<i32>,
+        right: Option<i32>,
+        top: Option<i32>,
+        bottom: Option<i32>,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -502,10 +535,75 @@ impl TryFrom<WireBackgroundEffectConfig> for BackgroundEffectConfig {
     }
 }
 
+impl TryFrom<WireWindowEffectConfig> for WindowEffectConfig {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireWindowEffectConfig) -> Result<Self, Self::Error> {
+        Ok(WindowEffectConfig {
+            behind: value.behind.map(TryInto::try_into).transpose()?,
+            behind_root_surface: value
+                .behind_root_surface
+                .map(TryInto::try_into)
+                .transpose()?,
+            in_front: value.in_front.map(TryInto::try_into).transpose()?,
+            replace: value.replace.map(TryInto::try_into).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<WireWindowEffectSlot> for WindowEffectSlot {
+    type Error = DecorationBridgeError;
+
+    fn try_from(value: WireWindowEffectSlot) -> Result<Self, Self::Error> {
+        if value.kind != "window-effect" {
+            return Err(DecorationBridgeError::InvalidShaderDescriptor);
+        }
+
+        Ok(WindowEffectSlot {
+            effect: value.effect.try_into()?,
+            outsets: decode_effect_outsets(value.outsets),
+        })
+    }
+}
+
+fn decode_effect_outsets(value: Option<WireEffectOutsets>) -> EffectOutsets {
+    match value {
+        Some(WireEffectOutsets::Uniform(value)) => {
+            let value = value.max(0);
+            EffectOutsets {
+                left: value,
+                right: value,
+                top: value,
+                bottom: value,
+            }
+        }
+        Some(WireEffectOutsets::Edges {
+            left,
+            right,
+            top,
+            bottom,
+        }) => EffectOutsets {
+            left: left.unwrap_or(0).max(0),
+            right: right.unwrap_or(0).max(0),
+            top: top.unwrap_or(0).max(0),
+            bottom: bottom.unwrap_or(0).max(0),
+        },
+        None => EffectOutsets::default(),
+    }
+}
+
 fn decode_effect_input(value: WireEffectInput) -> Result<EffectInput, DecorationBridgeError> {
     Ok(match value {
         WireEffectInput::BackdropSource => EffectInput::Backdrop,
         WireEffectInput::XrayBackdropSource => EffectInput::XrayBackdrop,
+        WireEffectInput::WindowSource { include } => {
+            let include = match include.as_deref().unwrap_or("full") {
+                "full" => WindowSourceInclude::Full,
+                "root-surface" => WindowSourceInclude::RootSurface,
+                _ => return Err(DecorationBridgeError::InvalidEffectInput),
+            };
+            EffectInput::WindowSource(include)
+        }
         WireEffectInput::ShaderInput(stage) => {
             if stage.shader.kind != "shader-module" || stage.shader.path.is_empty() {
                 return Err(DecorationBridgeError::InvalidEffectInput);

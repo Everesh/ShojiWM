@@ -10,6 +10,7 @@ import {
     WindowBorder,
     backdropSource,
     compileEffect,
+    compileWindowEffect,
     dualKawaseBlur,
     type SSDStyle,
     type WaylandWindow,
@@ -21,6 +22,7 @@ import {
     shaderInput,
     shaderStage,
     loadShader,
+    windowSource,
 } from "shoji_wm";
 import type { DecorationRenderable, Direction, MaybeSignal } from "shoji_wm/types";
 
@@ -85,6 +87,50 @@ WINDOW_MANAGER.effect.background_effect = compileEffect({
     pipeline: [
         dualKawaseBlur({ radius: 4, passes: 2 }),
     ]
+});
+
+const windowShadowEffect = compileWindowEffect({
+    input: windowSource({ include: "full" }),
+    outsets: { left: 72, right: 72, top: 56, bottom: 96 },
+    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
+    pipeline: [
+        shaderStage(loadShader("./src/window-shadow.frag"), {
+            uniforms: {
+                shadow_color: [0.45, 0.45, 0.45],
+                shadow_opacity: 0.5,
+                shadow_offset_px: [24.0, 24.0],
+            },
+        }),
+    ],
+});
+
+const windowFrontEffect = compileWindowEffect({
+    input: windowSource({ include: "full" }),
+    outsets: { left: 72, right: 72, top: 56, bottom: 96 },
+    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
+    pipeline: [
+        shaderStage(loadShader("./src/window-shadow.frag"), {
+            uniforms: {
+                shadow_color: [0.45, 0.45, 0.45],
+                shadow_opacity: 0.5,
+                shadow_offset_px: [-24.0, -24.0],
+            },
+        }),
+    ],
+});
+
+const windowReplaceEffect = compileWindowEffect({
+    input: windowSource({ include: "full" }),
+    invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 4 },
+    pipeline: [
+        shaderStage(loadShader("./src/window-grayscale.frag")),
+    ],
+});
+
+WINDOW_MANAGER.effect.window = (window) => ({
+    behindRootSurface: windowShadowEffect,
+    inFront: windowFrontEffect,
+    replace: windowReplaceEffect,
 });
 
 WINDOW_MANAGER.event.onOpen((window) => {

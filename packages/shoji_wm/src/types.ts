@@ -249,7 +249,8 @@ export type EffectInputHandle =
   | XrayBackdropSourceHandle
   | ShaderInputHandle
   | ImageSourceHandle
-  | NamedTextureHandle;
+  | NamedTextureHandle
+  | WindowSourceHandle;
 
 export type EffectStageHandle =
   | ShaderStageHandle
@@ -266,8 +267,36 @@ export interface CompiledEffectHandle {
   pipeline: EffectStageHandle[];
 }
 
+export interface WindowSourceHandle {
+  kind: "window-source";
+  include: "full" | "root-surface";
+}
+
+export type EffectOutsets =
+  | number
+  | {
+      left?: number;
+      right?: number;
+      top?: number;
+      bottom?: number;
+    };
+
+export interface WindowEffectHandle {
+  kind: "window-effect";
+  effect: CompiledEffectHandle;
+  outsets?: EffectOutsets;
+}
+
+export interface WindowEffectAssignment {
+  behind?: WindowEffectHandle | null;
+  behindRootSurface?: WindowEffectHandle | null;
+  inFront?: WindowEffectHandle | null;
+  replace?: WindowEffectHandle | null;
+}
+
 export interface WindowManagerEffectConfig {
   background_effect: CompiledEffectHandle | null;
+  window?: (window: WaylandWindow) => WindowEffectAssignment | null;
 }
 
 export interface OutputMode {

@@ -60,6 +60,23 @@ pub struct CachedBackdropSubElement {
     pub commit_counter: CommitCounter,
 }
 
+#[derive(Debug, Clone)]
+pub struct WindowEffectElementState {
+    pub signature: u64,
+    pub id: Id,
+    pub commit_counter: CommitCounter,
+}
+
+impl Default for WindowEffectElementState {
+    fn default() -> Self {
+        Self {
+            signature: 0,
+            id: Id::new(),
+            commit_counter: CommitCounter::default(),
+        }
+    }
+}
+
 impl Default for CachedBackdropSubElement {
     fn default() -> Self {
         Self {
@@ -1869,7 +1886,7 @@ fn resolve_effect_input(
     requested_size: (i32, i32),
 ) -> Result<GlesTexture, ShaderEffectError> {
     match input {
-        EffectInput::Backdrop => Ok(ctx.backdrop.clone()),
+        EffectInput::Backdrop | EffectInput::WindowSource(_) => Ok(ctx.backdrop.clone()),
         EffectInput::XrayBackdrop => ctx
             .xray_backdrop
             .clone()

@@ -35,10 +35,12 @@ import {
   installAssetResolverBridge,
   installProcessResolverBridge,
   installRuntimeHooks,
+  enterWindowDependencyScope,
   invokeKeyBinding,
   takePendingDisplayConfig,
   takePendingKeyBindingConfig,
   takePendingProcessConfig,
+  leaveWindowDependencyScope,
   leaveLayerDependencyScope,
   read,
   takeDirtyLayerNodeIds,
@@ -57,6 +59,7 @@ import {
   type WaylandLayer,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
+  type WindowEffectAssignment,
   type WindowTransform,
 } from "shoji_wm";
 
@@ -149,6 +152,7 @@ interface EvaluateSuccess {
   kind: "evaluate";
   serialized: unknown;
   transform: WindowTransform;
+  windowEffects?: WindowEffectAssignment | null;
   dirtyNodeIds?: string[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
@@ -195,6 +199,7 @@ interface InvokeHandlerSuccess {
   invoked: boolean;
   serialized?: unknown;
   transform?: WindowTransform;
+  windowEffects?: WindowEffectAssignment | null;
   dirtyWindowIds: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
@@ -229,6 +234,7 @@ interface StartCloseSuccess {
   invoked: boolean;
   serialized?: unknown;
   transform?: WindowTransform;
+  windowEffects?: WindowEffectAssignment | null;
   dirtyWindowIds: string[];
   dirtyWindowNodeIds?: Record<string, string[]>;
   actions: RuntimeWindowAction[];
@@ -271,6 +277,11 @@ interface RuntimeFailure {
 interface RuntimeLayerEffectAssignment {
   layerId: string;
   effect: CompiledEffectHandle | null;
+}
+
+interface RuntimeEffectConfig {
+  background_effect: CompiledEffectHandle | null;
+  window?: (window: ReturnType<typeof createDecorationEvaluationCache>["window"]) => WindowEffectAssignment | null;
 }
 
 interface RuntimeProcessConfigEntry {
@@ -457,7 +468,7 @@ async function main() {
         beginRuntimeTurn(request.nowMs);
       }
       if (request.kind === "evaluate") {
-        const serialized = evaluateSnapshot(decoration, events, request.snapshot);
+        const result = evaluateSnapshot(decoration, events, effectConfig, request.snapshot);
         const keyBindingConfig = pendingKeyBindingConfigPayload();
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
@@ -465,9 +476,10 @@ async function main() {
           requestId: request.requestId,
           ok: true,
           kind: "evaluate",
-          serialized,
+          serialized: result.serialized,
           transform: cacheByWindowId.get(request.snapshot.id)?.cache.lastTransform ??
             identityTransform(),
+          windowEffects: result.windowEffects,
           dirtyNodeIds: takeDirtyWindowNodeIds(request.snapshot.id),
           nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
           displayConfig: pendingDisplayConfigPayload(),
@@ -511,7 +523,7 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "startClose") {
-          const result = startClose(events, request.windowId);
+          const result = startClose(events, effectConfig, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
@@ -526,7 +538,7 @@ async function main() {
             processActions,
           });
         } else if (request.kind === "evaluateCached") {
-          const result = evaluateCached(request.windowId);
+          const result = evaluateCached(effectConfig, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
@@ -536,6 +548,7 @@ async function main() {
             kind: "evaluateCached",
             serialized: result.serialized,
             transform: result.transform,
+            windowEffects: result.windowEffects,
             dirtyNodeIds: result.dirtyNodeIds,
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
@@ -583,7 +596,7 @@ async function main() {
             processActions,
           });
         } else {
-          const result = invokeHandler(request.windowId, request.handlerId);
+          const result = invokeHandler(effectConfig, request.windowId, request.handlerId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
@@ -610,9 +623,13 @@ async function main() {
   }
 }
 
-function evaluateCached(windowId: string): {
+function evaluateCached(
+  effectConfig: RuntimeEffectConfig,
+  windowId: string,
+): {
   serialized: unknown;
   transform: WindowTransform;
+  windowEffects: WindowEffectAssignment | null;
   dirtyNodeIds?: string[];
   nextPollInMs?: number;
 } {
@@ -626,6 +643,7 @@ function evaluateCached(windowId: string): {
   return {
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
+    windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
     dirtyNodeIds,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
@@ -634,8 +652,9 @@ function evaluateCached(windowId: string): {
 function evaluateSnapshot(
   decoration: DecorationFunction,
   events: WindowManagerEventController,
+  effectConfig: RuntimeEffectConfig,
   snapshot: WaylandWindowSnapshot,
-): unknown {
+): { serialized: unknown; windowEffects: WindowEffectAssignment | null } {
   const existing = cacheByWindowId.get(snapshot.id);
   if (!existing) {
     const entry = createRuntimeCacheEntry(snapshot, decoration);
@@ -646,7 +665,10 @@ function evaluateSnapshot(
     }
     events.emitFocus(entry.cache.window, snapshot.isFocused);
     dirtyWindowIds.delete(snapshot.id);
-    return entry.cache.reevaluate(takeDirtyWindowNodeIds(snapshot.id)).serialized;
+    return {
+      serialized: entry.cache.reevaluate(takeDirtyWindowNodeIds(snapshot.id)).serialized,
+      windowEffects: evaluateWindowEffects(effectConfig, snapshot.id, entry),
+    };
   }
 
   const focusChanged = existing.latestSnapshot.isFocused !== snapshot.isFocused;
@@ -659,10 +681,34 @@ function evaluateSnapshot(
   const wasDirty = dirtyWindowIds.delete(snapshot.id);
   if (wasDirty) {
     const dirtyNodeIds = takeDirtyWindowNodeIds(snapshot.id);
-    return existing.cache.reevaluate(dirtyNodeIds).serialized;
+    return {
+      serialized: existing.cache.reevaluate(dirtyNodeIds).serialized,
+      windowEffects: evaluateWindowEffects(effectConfig, snapshot.id, existing),
+    };
   }
 
-  return updated?.serialized ?? existing.cache.lastSerialized;
+  return {
+    serialized: updated?.serialized ?? existing.cache.lastSerialized,
+    windowEffects: evaluateWindowEffects(effectConfig, snapshot.id, existing),
+  };
+}
+
+function evaluateWindowEffects(
+  effectConfig: RuntimeEffectConfig,
+  windowId: string,
+  entry: RuntimeCacheEntry,
+): WindowEffectAssignment | null {
+  const evaluate = effectConfig.window;
+  if (!evaluate) {
+    return null;
+  }
+
+  enterWindowDependencyScope(windowId);
+  try {
+    return resolveSignals(evaluate(entry.cache.window)) as WindowEffectAssignment | null;
+  } finally {
+    leaveWindowDependencyScope();
+  }
 }
 
 function createRuntimeCacheEntry(
@@ -991,6 +1037,7 @@ function closeWindow(events: WindowManagerEventController, windowId: string): vo
 
 function startClose(
   events: WindowManagerEventController,
+  effectConfig: RuntimeEffectConfig,
   windowId: string,
 ): Omit<StartCloseSuccess, "requestId" | "ok" | "kind"> {
   const entry = cacheByWindowId.get(windowId);
@@ -999,6 +1046,7 @@ function startClose(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
+      windowEffects: null,
       nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
@@ -1037,6 +1085,7 @@ function startClose(
     invoked: true,
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
+    windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
     dirtyWindowIds: [windowId],
     dirtyWindowNodeIds: { [windowId]: dirtyNodeIds },
     actions,
@@ -1045,6 +1094,7 @@ function startClose(
 }
 
 function invokeHandler(
+  effectConfig: RuntimeEffectConfig,
   windowId: string,
   handlerId: string,
 ): Omit<InvokeHandlerSuccess, "requestId" | "ok" | "kind"> {
@@ -1054,6 +1104,7 @@ function invokeHandler(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
+      windowEffects: null,
       nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
@@ -1064,6 +1115,7 @@ function invokeHandler(
       invoked: false,
       dirtyWindowIds: [],
       actions: [],
+      windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
       nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
@@ -1088,6 +1140,7 @@ function invokeHandler(
     invoked: true,
     serialized: reevaluated.serialized,
     transform: entry.cache.lastTransform,
+    windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
     dirtyWindowIds: [windowId],
     dirtyWindowNodeIds: { [windowId]: dirtyNodeIds },
     actions,
@@ -1184,16 +1237,21 @@ function resolveEvents(
   return maybeEvents;
 }
 
-function resolveEffectConfig(
-  loaded: Record<string, unknown>,
-) : { background_effect: CompiledEffectHandle | null } {
+function resolveEffectConfig(loaded: Record<string, unknown>): RuntimeEffectConfig {
   const maybeEffect =
-    (loaded.WINDOW_MANAGER as { effect?: { background_effect?: CompiledEffectHandle | null } } | undefined)
+    (loaded.WINDOW_MANAGER as { effect?: {
+      background_effect?: CompiledEffectHandle | null;
+      window?: RuntimeEffectConfig["window"];
+    } } | undefined)
       ?.effect ??
-    (loaded.default as { effect?: { background_effect?: CompiledEffectHandle | null } } | undefined)?.effect;
+    (loaded.default as { effect?: {
+      background_effect?: CompiledEffectHandle | null;
+      window?: RuntimeEffectConfig["window"];
+    } } | undefined)?.effect;
 
   return {
     background_effect: maybeEffect?.background_effect ?? null,
+    window: maybeEffect?.window,
   };
 }
 

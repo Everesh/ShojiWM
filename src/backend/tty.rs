@@ -17,7 +17,7 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay, context::ContextPriority},
         renderer::{
-            Bind, ExportMem, ImportDma, ImportEgl, ImportMemWl, Offscreen,
+            Bind, ExportMem, ImportDma, ImportEgl, ImportMemWl, Offscreen, Texture,
             damage::OutputDamageTracker,
             element::{
                 AsRenderElements, Element,
@@ -61,12 +61,14 @@ use crate::{
     backend::decoration,
     backend::snapshot,
     backend::visual::{
-        WindowVisualState, root_physical_origin, transformed_root_rect, window_visual_state,
+        WindowVisualState, root_physical_origin, transformed_rect, transformed_root_rect,
+        window_visual_state,
     },
     backend::window as window_render,
     config::DisplayModePreference,
     drawing::PointerRenderElement,
     presentation::{take_presentation_feedback, update_primary_scanout_output},
+    ssd::{EffectInput, WindowSourceInclude},
     state::ShojiWM,
 };
 use smithay::wayland::presentation::Refresh;
@@ -89,6 +91,11 @@ fn frame_liveness_debug_enabled() -> bool {
 
 fn output_render_debug_enabled() -> bool {
     std::env::var_os("SHOJI_OUTPUT_RENDER_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn window_effect_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_WINDOW_EFFECT_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
 }
 
@@ -2746,6 +2753,7 @@ fn render_surface(
             };
             window_timing.client_phase_ms =
                 client_phase_started_at.elapsed().as_secs_f64() * 1000.0;
+            let mut current_window_elements: Vec<TtyRenderElements> = Vec::new();
             if !use_full_window_snapshot {
                 let popup_phase_started_at = Instant::now();
                 let popup_elements = transform_window_elements(
@@ -2760,7 +2768,7 @@ fn render_surface(
                     TtyRenderElements::Window,
                     TtyRenderElements::TransformedWindow,
                 );
-                scene_elements.extend(popup_elements.into_iter());
+                current_window_elements.extend(popup_elements);
                 window_timing.popup_phase_ms =
                     popup_phase_started_at.elapsed().as_secs_f64() * 1000.0;
             }
@@ -2791,13 +2799,530 @@ fn render_surface(
                     "output_render_debug: window rendered"
                 );
             }
-            scene_elements.extend(client_elements.into_iter());
-            scene_elements.extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
-            scene_elements.extend(
+            // Window-source effects sample only the top-level window. `Full` means
+            // root surface plus SSD decoration, but not popup/subsurface content.
+            let source_clip_scale = if use_full_window_snapshot {
+                scale
+            } else {
+                snap_scale
+            };
+            let root_surface_source_elements = root_surface_source_elements_for_window(
+                window,
+                &mut backend.renderer,
+                physical_location,
+                client_physical_geometry,
+                output_geo.loc,
+                scale,
+                source_clip_scale,
+                visual_state,
+                visual_state.opacity,
+                content_clip,
+            );
+            let mut full_window_source_elements = root_surface_source_elements_for_window(
+                window,
+                &mut backend.renderer,
+                physical_location,
+                client_physical_geometry,
+                output_geo.loc,
+                scale,
+                source_clip_scale,
+                visual_state,
+                visual_state.opacity,
+                content_clip,
+            );
+            if decoration_ready && let Some(root_origin) = root_origin {
+                let source_alpha = visual_state.opacity;
+                let mut source_ui_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+                let mut source_backdrop_elements: Vec<(usize, TtyRenderElements)> = Vec::new();
+
+                let mut source_backdrop_items = backdrop_shader_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    window_decorations,
+                    &state.window_commit_times,
+                    &state.window_source_damage,
+                    &state.lower_layer_source_damage,
+                    state.lower_layer_scene_generation,
+                    &output,
+                    output_geo,
+                    scale,
+                    &windows_top_to_bottom,
+                    _window_index,
+                    window,
+                    source_alpha,
+                    decoration_ready,
+                    false,
+                );
+                if let Some(effect_config) = state.configured_background_effect.as_ref() {
+                    source_backdrop_items.extend(
+                        configured_background_effect_elements_for_window(
+                            &mut backend.renderer,
+                            space,
+                            window_decorations,
+                            &state.window_commit_times,
+                            &state.window_source_damage,
+                            &state.lower_layer_source_damage,
+                            state.lower_layer_scene_generation,
+                            &output,
+                            output_geo,
+                            scale,
+                            &windows_top_to_bottom,
+                            _window_index,
+                            window,
+                            source_alpha,
+                            effect_config,
+                            false,
+                        )
+                        .into_iter()
+                        .map(|(order, element)| (order, element, true)),
+                    );
+                }
+                for (order, element, render_as_backdrop) in source_backdrop_items.drain(..) {
+                    let items =
+                        transform_backdrop_elements(vec![element], root_origin, visual_state)?;
+                    if render_as_backdrop {
+                        source_backdrop_elements
+                            .extend(items.into_iter().map(|item| (order, item)));
+                    } else {
+                        source_ui_elements.extend(items.into_iter().map(|item| (order, item)));
+                    }
+                }
+
+                if let Some(decoration_state) = window_decorations.get_mut(window) {
+                    let mut source_background_items =
+                        decoration::ordered_background_elements_for_window(
+                            &mut backend.renderer,
+                            decoration_state,
+                            output_geo,
+                            source_clip_scale,
+                            source_alpha,
+                        )
+                        .inspect_err(|error| {
+                            warn!(
+                                ?error,
+                                "failed to build window effect source decoration backgrounds"
+                            );
+                        })
+                        .unwrap_or_default();
+                    source_background_items.sort_by_key(|(order, _)| *order);
+                    for (order, element) in source_background_items {
+                        source_ui_elements.extend(
+                            transform_decoration_elements(
+                                vec![element],
+                                root_origin,
+                                visual_state,
+                            )?
+                            .into_iter()
+                            .map(|item| (order, item)),
+                        );
+                    }
+                }
+
+                for (order, element) in decoration::ordered_icon_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    window_decorations,
+                    &output,
+                    window,
+                    source_alpha,
+                )? {
+                    source_ui_elements.extend(
+                        transform_text_elements(vec![element], root_origin, visual_state)?
+                            .into_iter()
+                            .map(|item| (order, item)),
+                    );
+                }
+
+                for (order, element) in decoration::ordered_text_elements_for_window(
+                    &mut backend.renderer,
+                    space,
+                    window_decorations,
+                    &output,
+                    window,
+                    source_alpha,
+                )? {
+                    source_ui_elements.extend(
+                        transform_text_elements(vec![element], root_origin, visual_state)?
+                            .into_iter()
+                            .map(|item| (order, item)),
+                    );
+                }
+
+                source_ui_elements.sort_by_key(|(order, _)| *order);
+                source_backdrop_elements.sort_by_key(|(order, _)| *order);
+                full_window_source_elements
+                    .extend(source_ui_elements.into_iter().map(|(_, element)| element));
+                full_window_source_elements.extend(
+                    source_backdrop_elements
+                        .into_iter()
+                        .map(|(_, element)| element),
+                );
+            }
+
+            let mut original_window_body_elements: Vec<TtyRenderElements> = Vec::new();
+            original_window_body_elements.extend(client_elements.into_iter());
+            original_window_body_elements
+                .extend(ordered_ui_elements.into_iter().map(|(_, element)| element));
+            original_window_body_elements.extend(
                 ordered_backdrop_elements
                     .into_iter()
                     .map(|(_, element)| element),
             );
+            let replace_effect_slot = window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.window_effects.as_ref())
+                .and_then(|effects| effects.replace.as_ref())
+                .cloned();
+            let replace_effects = replace_effect_slot.as_ref()
+                .and_then(|effect| {
+                    let decoration = window_decorations.get(window)?;
+                    let (rect, source_elements): (_, &[TtyRenderElements]) =
+                        match &effect.effect.input {
+                            EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                                transformed_root_rect(
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &full_window_source_elements,
+                            ),
+                            EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                                transformed_rect(
+                                    decoration.client_rect,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &root_surface_source_elements,
+                            ),
+                            _ => (
+                                transformed_root_rect(
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &original_window_body_elements,
+                            ),
+                        };
+                    let signature = window_effect_signature(
+                        "replace",
+                        rect,
+                        effect,
+                        scale,
+                        source_elements,
+                    );
+                    let (element_id, commit_counter) = window_decorations
+                        .get_mut(window)
+                        .map(|decoration| {
+                            window_effect_element_state(
+                                decoration,
+                                format!("replace@{}", output.name()),
+                                signature,
+                            )
+                        })?;
+                    window_effect_elements(
+                        &mut backend.renderer,
+                        &output,
+                        output_geo,
+                        scale,
+                        &window_id,
+                        "replace",
+                        element_id,
+                        commit_counter,
+                        rect,
+                        effect,
+                        source_elements,
+                    )
+                    .inspect_err(|error| {
+                        warn!(window_id = %window_id, ?error, "failed to build replacement window effect");
+                    })
+                    .ok()
+                });
+            if let Some(replace_effects) = replace_effects {
+                if use_full_window_snapshot {
+                    current_window_elements.extend(transform_window_elements(
+                        window_render::popup_elements(
+                            window,
+                            &mut backend.renderer,
+                            physical_location,
+                            scale,
+                            visual_state.opacity,
+                        ),
+                        visual_state,
+                        TtyRenderElements::Window,
+                        TtyRenderElements::TransformedWindow,
+                    ));
+                }
+                current_window_elements.extend(non_root_surface_elements_for_window(
+                    window,
+                    &mut backend.renderer,
+                    physical_location,
+                    client_physical_geometry,
+                    output_geo.loc,
+                    scale,
+                    source_clip_scale,
+                    visual_state,
+                    visual_state.opacity,
+                    content_clip,
+                ));
+                current_window_elements.extend(replace_effects);
+            } else {
+                current_window_elements.extend(original_window_body_elements);
+            }
+            if window_effect_debug_enabled() {
+                let effect_summary = window_decorations.get(window).map(|decoration| {
+                    decoration.window_effects.as_ref().map(|effects| {
+                        (
+                            effects.behind.is_some(),
+                            effects.behind_root_surface.is_some(),
+                            effects.in_front.is_some(),
+                            effects.replace.is_some(),
+                            effects
+                                .behind_root_surface
+                                .as_ref()
+                                .or(effects.behind.as_ref())
+                                .map(|effect| effect.outsets),
+                        )
+                    })
+                });
+                info!(
+                    output = %output.name(),
+                    window_id = %window_id,
+                    use_full_window_snapshot,
+                    current_window_element_count = current_window_elements.len(),
+                    effect_summary = ?effect_summary,
+                    "window effect debug: window render effect state"
+                );
+            }
+            let behind_root_surface_effect_slot = window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.window_effects.as_ref())
+                .and_then(|effects| effects.behind_root_surface.as_ref())
+                .cloned();
+            let behind_root_surface_effects =
+                behind_root_surface_effect_slot.as_ref().and_then(|effect| {
+                    let decoration = window_decorations.get(window)?;
+                    let (rect, source_elements): (_, &[TtyRenderElements]) =
+                        match &effect.effect.input {
+                            EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                                transformed_root_rect(
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &full_window_source_elements,
+                            ),
+                            EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                                transformed_rect(
+                                    decoration.client_rect,
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &root_surface_source_elements,
+                            ),
+                            _ => (
+                                transformed_root_rect(
+                                    decoration.layout.root.rect,
+                                    decoration.visual_transform,
+                                ),
+                                &full_window_source_elements,
+                            ),
+                        };
+                    let signature = window_effect_signature(
+                        "behind-root-surface",
+                        rect,
+                        effect,
+                        scale,
+                        source_elements,
+                    );
+                    let (element_id, commit_counter) =
+                        window_decorations.get_mut(window).map(|decoration| {
+                            window_effect_element_state(
+                                decoration,
+                                format!("behind-root-surface@{}", output.name()),
+                                signature,
+                            )
+                        })?;
+                    window_effect_elements(
+                        &mut backend.renderer,
+                        &output,
+                        output_geo,
+                        scale,
+                        &window_id,
+                        "behind-root-surface",
+                        element_id,
+                        commit_counter,
+                        rect,
+                        effect,
+                        source_elements,
+                    )
+                    .inspect_err(|error| {
+                        warn!(
+                            window_id = %window_id,
+                            ?error,
+                            "failed to build root-surface window behind effect"
+                        );
+                    })
+                    .ok()
+                });
+            let behind_effect_slot = window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.window_effects.as_ref())
+                .and_then(|effects| effects.behind.as_ref())
+                .cloned();
+            let behind_effects = behind_effect_slot.as_ref().and_then(|effect| {
+                let decoration = window_decorations.get(window)?;
+                let (rect, source_elements): (_, &[TtyRenderElements]) = match &effect.effect.input
+                {
+                    EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &full_window_source_elements,
+                    ),
+                    EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                        transformed_rect(
+                            decoration.client_rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &root_surface_source_elements,
+                    ),
+                    _ => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &current_window_elements,
+                    ),
+                };
+                let signature =
+                    window_effect_signature("behind", rect, effect, scale, source_elements);
+                let (element_id, commit_counter) =
+                    window_decorations.get_mut(window).map(|decoration| {
+                        window_effect_element_state(
+                            decoration,
+                            format!("behind@{}", output.name()),
+                            signature,
+                        )
+                    })?;
+                window_effect_elements(
+                    &mut backend.renderer,
+                    &output,
+                    output_geo,
+                    scale,
+                    &window_id,
+                    "behind",
+                    element_id,
+                    commit_counter,
+                    rect,
+                    effect,
+                    source_elements,
+                )
+                .inspect_err(|error| {
+                    warn!(window_id = %window_id, ?error, "failed to build window behind effect");
+                })
+                .ok()
+            });
+            let in_front_effect_slot = window_decorations
+                .get(window)
+                .and_then(|decoration| decoration.window_effects.as_ref())
+                .and_then(|effects| effects.in_front.as_ref())
+                .cloned();
+            let in_front_effects = in_front_effect_slot.as_ref().and_then(|effect| {
+                let decoration = window_decorations.get(window)?;
+                let (rect, source_elements): (_, &[TtyRenderElements]) = match &effect.effect.input
+                {
+                    EffectInput::WindowSource(WindowSourceInclude::Full) => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &full_window_source_elements,
+                    ),
+                    EffectInput::WindowSource(WindowSourceInclude::RootSurface) => (
+                        transformed_rect(
+                            decoration.client_rect,
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &root_surface_source_elements,
+                    ),
+                    _ => (
+                        transformed_root_rect(
+                            decoration.layout.root.rect,
+                            decoration.visual_transform,
+                        ),
+                        &current_window_elements,
+                    ),
+                };
+                let signature =
+                    window_effect_signature("in-front", rect, effect, scale, source_elements);
+                let (element_id, commit_counter) =
+                    window_decorations.get_mut(window).map(|decoration| {
+                        window_effect_element_state(
+                            decoration,
+                            format!("in-front@{}", output.name()),
+                            signature,
+                        )
+                    })?;
+                window_effect_elements(
+                    &mut backend.renderer,
+                    &output,
+                    output_geo,
+                    scale,
+                    &window_id,
+                    "in-front",
+                    element_id,
+                    commit_counter,
+                    rect,
+                    effect,
+                    source_elements,
+                )
+                .inspect_err(|error| {
+                    warn!(
+                        window_id = %window_id,
+                        ?error,
+                        "failed to build in-front window effect"
+                    );
+                })
+                .ok()
+            });
+
+            // Smithay renders render elements in reverse order, so this vector is
+            // ordered front-to-back. Front effects go before the window elements;
+            // behind effects go after them but still above lower windows.
+            if let Some(in_front_effects) = in_front_effects {
+                if window_effect_debug_enabled() {
+                    info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        in_front_effect_count = in_front_effects.len(),
+                        "window effect debug: appending in-front effects"
+                    );
+                }
+                scene_elements.extend(in_front_effects);
+            }
+            scene_elements.extend(current_window_elements.into_iter());
+            if let Some(behind_effects) = behind_root_surface_effects {
+                if window_effect_debug_enabled() {
+                    info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        behind_effect_count = behind_effects.len(),
+                        "window effect debug: appending root-surface behind effects"
+                    );
+                }
+                scene_elements.extend(behind_effects);
+            }
+            if let Some(behind_effects) = behind_effects {
+                if window_effect_debug_enabled() {
+                    info!(
+                        output = %output.name(),
+                        window_id = %window_id,
+                        behind_effect_count = behind_effects.len(),
+                        "window effect debug: appending behind effects"
+                    );
+                }
+                scene_elements.extend(behind_effects);
+            }
 
             windows_ready_for_decoration.insert(window_id.clone());
 
@@ -3144,6 +3669,55 @@ fn render_surface(
                     });
                 }
             }
+            let replace_effect_windows: Vec<_> = state
+                .space
+                .elements_for_output(&output)
+                .filter(|window| {
+                    state
+                        .window_decorations
+                        .get(*window)
+                        .and_then(|decoration| decoration.window_effects.as_ref())
+                        .and_then(|effects| effects.replace.as_ref())
+                        .is_some()
+                })
+                .cloned()
+                .collect();
+            if !replace_effect_windows.is_empty() {
+                use smithay::backend::renderer::element::{
+                    Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
+                };
+                use smithay::desktop::utils::update_surface_primary_scanout_output;
+
+                for window in replace_effect_windows {
+                    // Replacement effects render the client into an offscreen texture and then
+                    // present that texture instead of the original surface element. Without this
+                    // synthetic state, primary-scanout bookkeeping is cleared and visible clients
+                    // only receive throttled frame callbacks, making text input appear late.
+                    let mut synthetic_states = RenderElementStates::default();
+                    window.with_surfaces(|surface, _| {
+                        synthetic_states.states.insert(
+                            Id::from_wayland_resource(surface),
+                            RenderElementState {
+                                visible_area: usize::MAX,
+                                presentation_state: RenderElementPresentationState::Rendering {
+                                    reason: None,
+                                },
+                                needs_capture: false,
+                            },
+                        );
+                    });
+                    window.with_surfaces(|surface, states| {
+                        update_surface_primary_scanout_output(
+                            surface,
+                            &output,
+                            states,
+                            None,
+                            &synthetic_states,
+                            crate::presentation::area_primary_scanout_compare,
+                        );
+                    });
+                }
+            }
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, &result.states);
             surface
@@ -3373,6 +3947,138 @@ fn transform_clipped_elements(
             TtyRenderElements::TransformedClipped(transformed)
         })
         .collect()
+}
+
+fn root_surface_source_elements_for_window(
+    window: &smithay::desktop::Window,
+    renderer: &mut GlesRenderer,
+    physical_location: Point<i32, smithay::utils::Physical>,
+    client_physical_geometry: Option<Rectangle<i32, smithay::utils::Physical>>,
+    output_origin: Point<i32, Logical>,
+    output_scale: Scale<f64>,
+    clip_scale: Scale<f64>,
+    visual: WindowVisualState,
+    alpha: f32,
+    content_clip: Option<crate::ssd::ContentClip>,
+) -> Vec<TtyRenderElements> {
+    if let Some(content_clip) = content_clip {
+        let clipped = window_render::clipped_surface_elements(
+            window,
+            renderer,
+            physical_location,
+            client_physical_geometry,
+            output_origin,
+            output_scale,
+            clip_scale,
+            alpha,
+            Some(content_clip),
+        )
+        .inspect_err(|error| {
+            warn!(
+                ?error,
+                "failed to build clipped root surface source elements"
+            );
+        })
+        .unwrap_or_default();
+
+        let mut root_raw_element = None;
+        for element in clipped {
+            match element {
+                window_render::WindowClipElement::Clipped(element) => {
+                    return transform_clipped_elements(vec![element], visual);
+                }
+                window_render::WindowClipElement::Raw(element) if root_raw_element.is_none() => {
+                    root_raw_element = Some(element);
+                }
+                window_render::WindowClipElement::Raw(_) => {}
+            }
+        }
+        if let Some(element) = root_raw_element {
+            return transform_window_elements(
+                vec![element],
+                visual,
+                TtyRenderElements::Window,
+                TtyRenderElements::TransformedWindow,
+            );
+        }
+    }
+
+    transform_window_elements(
+        window_render::root_surface_elements(
+            window,
+            renderer,
+            physical_location,
+            output_scale,
+            alpha,
+        ),
+        visual,
+        TtyRenderElements::Window,
+        TtyRenderElements::TransformedWindow,
+    )
+}
+
+fn non_root_surface_elements_for_window(
+    window: &smithay::desktop::Window,
+    renderer: &mut GlesRenderer,
+    physical_location: Point<i32, smithay::utils::Physical>,
+    client_physical_geometry: Option<Rectangle<i32, smithay::utils::Physical>>,
+    output_origin: Point<i32, Logical>,
+    output_scale: Scale<f64>,
+    clip_scale: Scale<f64>,
+    visual: WindowVisualState,
+    alpha: f32,
+    content_clip: Option<crate::ssd::ContentClip>,
+) -> Vec<TtyRenderElements> {
+    if let Some(content_clip) = content_clip {
+        let clipped = window_render::clipped_surface_elements(
+            window,
+            renderer,
+            physical_location,
+            client_physical_geometry,
+            output_origin,
+            output_scale,
+            clip_scale,
+            alpha,
+            Some(content_clip),
+        )
+        .inspect_err(|error| {
+            warn!(?error, "failed to build clipped non-root surface elements");
+        })
+        .unwrap_or_default();
+
+        let mut saw_root = false;
+        let mut raw_elements = Vec::new();
+        for element in clipped {
+            match element {
+                window_render::WindowClipElement::Clipped(_) => {
+                    saw_root = true;
+                }
+                window_render::WindowClipElement::Raw(element) => raw_elements.push(element),
+            }
+        }
+        if !saw_root && !raw_elements.is_empty() {
+            raw_elements.remove(0);
+        }
+
+        return transform_window_elements(
+            raw_elements,
+            visual,
+            TtyRenderElements::Window,
+            TtyRenderElements::TransformedWindow,
+        );
+    }
+
+    let mut elements =
+        window_render::surface_elements(window, renderer, physical_location, output_scale, alpha);
+    if !elements.is_empty() {
+        elements.remove(0);
+    }
+    transform_window_elements(
+        elements,
+        visual,
+        TtyRenderElements::Window,
+        TtyRenderElements::TransformedWindow,
+    )
 }
 
 fn transform_text_elements(
@@ -3837,10 +4543,7 @@ fn capture_snapshot_from_output_elements(
     Option<crate::backend::snapshot::LiveWindowSnapshot>,
     smithay::backend::renderer::gles::GlesError,
 > {
-    let capture_origin: smithay::utils::Point<i32, smithay::utils::Physical> =
-        (smithay::utils::Point::from((rect.x, rect.y)) - output_geo.loc)
-            .to_f64()
-            .to_physical_precise_round(scale);
+    let capture_origin = capture_origin_for_logical_rect(output_geo, rect, scale);
     let relocated = elements
         .iter()
         .map(|element| {
@@ -3853,6 +4556,249 @@ fn capture_snapshot_from_output_elements(
         .collect::<Vec<_>>();
     snapshot::capture_snapshot(
         renderer, existing, tracker, rect, 0, true, scale, &relocated,
+    )
+}
+
+fn capture_origin_for_logical_rect(
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    rect: crate::ssd::LogicalRect,
+    scale: smithay::utils::Scale<f64>,
+) -> smithay::utils::Point<i32, smithay::utils::Physical> {
+    (smithay::utils::Point::from((rect.x, rect.y)) - output_geo.loc)
+        .to_f64()
+        .to_physical_precise_round(scale)
+}
+
+fn window_effect_signature(
+    placement: &'static str,
+    window_rect: crate::ssd::LogicalRect,
+    effect: &crate::ssd::WindowEffectSlot,
+    scale: smithay::utils::Scale<f64>,
+    window_elements: &[TtyRenderElements],
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    placement.hash(&mut hasher);
+    (
+        window_rect.x,
+        window_rect.y,
+        window_rect.width,
+        window_rect.height,
+    )
+        .hash(&mut hasher);
+    (
+        effect.outsets.left,
+        effect.outsets.right,
+        effect.outsets.top,
+        effect.outsets.bottom,
+    )
+        .hash(&mut hasher);
+    format!("{:?}", effect.effect).hash(&mut hasher);
+    scale.x.to_bits().hash(&mut hasher);
+    scale.y.to_bits().hash(&mut hasher);
+    snapshot::render_element_scene_signature(window_elements, scale).hash(&mut hasher);
+    hasher.finish()
+}
+
+fn window_effect_element_state(
+    decoration: &mut crate::ssd::WindowDecorationState,
+    cache_key: String,
+    signature: u64,
+) -> (
+    smithay::backend::renderer::element::Id,
+    smithay::backend::renderer::utils::CommitCounter,
+) {
+    let state = decoration.window_effect_cache.entry(cache_key).or_default();
+    if state.signature != signature {
+        state.signature = signature;
+        state.commit_counter.increment();
+    }
+    (state.id.clone(), state.commit_counter)
+}
+
+fn window_effect_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    window_id: &str,
+    placement: &'static str,
+    element_id: smithay::backend::renderer::element::Id,
+    commit_counter: smithay::backend::renderer::utils::CommitCounter,
+    window_rect: crate::ssd::LogicalRect,
+    effect: &crate::ssd::WindowEffectSlot,
+    window_elements: &[TtyRenderElements],
+) -> Result<Vec<TtyRenderElements>, crate::backend::shader_effect::ShaderEffectError> {
+    if window_elements.is_empty() || window_rect.width <= 0 || window_rect.height <= 0 {
+        if window_effect_debug_enabled() {
+            info!(
+                output = %output.name(),
+                window_id,
+                placement,
+                window_rect = ?window_rect,
+                window_element_count = window_elements.len(),
+                "window effect debug: skipping effect due empty input"
+            );
+        }
+        return Ok(Vec::new());
+    }
+
+    let rect = expand_logical_rect(window_rect, effect.outsets);
+    if rect.width <= 0 || rect.height <= 0 {
+        if window_effect_debug_enabled() {
+            info!(
+                output = %output.name(),
+                window_id,
+                placement,
+                window_rect = ?window_rect,
+                expanded_rect = ?rect,
+                outsets = ?effect.outsets,
+                "window effect debug: skipping effect due invalid expanded rect"
+            );
+        }
+        return Ok(Vec::new());
+    }
+    let logical = Rectangle::new(
+        Point::from((rect.x, rect.y)),
+        (rect.width, rect.height).into(),
+    );
+    if logical.intersection(output_geo).is_none() {
+        if window_effect_debug_enabled() {
+            info!(
+                output = %output.name(),
+                window_id,
+                placement,
+                output_geo = ?output_geo,
+                expanded_rect = ?rect,
+                "window effect debug: skipping effect outside output"
+            );
+        }
+        return Ok(Vec::new());
+    }
+    if window_effect_debug_enabled() {
+        let first_geometry = window_elements
+            .first()
+            .map(|element| smithay::backend::renderer::element::Element::geometry(element, scale));
+        info!(
+            output = %output.name(),
+            window_id,
+            placement,
+            window_rect = ?window_rect,
+            expanded_rect = ?rect,
+            outsets = ?effect.outsets,
+            window_element_count = window_elements.len(),
+            first_window_element_geometry = ?first_geometry,
+            "window effect debug: capturing source"
+        );
+    }
+
+    let mut tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+        (0, 0),
+        1.0,
+        Transform::Normal,
+    );
+    let Some(source) = capture_snapshot_from_output_elements(
+        renderer,
+        output_geo,
+        rect,
+        scale,
+        None,
+        &mut tracker,
+        window_elements,
+    )
+    .map_err(crate::backend::shader_effect::ShaderEffectError::Gles)?
+    else {
+        if window_effect_debug_enabled() {
+            info!(
+                output = %output.name(),
+                window_id,
+                placement,
+                expanded_rect = ?rect,
+                "window effect debug: source capture returned none"
+            );
+        }
+        return Ok(Vec::new());
+    };
+    let texture_size = source.texture.size();
+    if window_effect_debug_enabled() {
+        info!(
+            output = %output.name(),
+            window_id,
+            placement,
+            source_texture_size = ?texture_size,
+            source_rect = ?source.rect,
+            "window effect debug: source captured"
+        );
+    }
+    let texture = crate::backend::shader_effect::apply_effect_pipeline(
+        renderer,
+        source.texture,
+        None,
+        (texture_size.w, texture_size.h),
+        None,
+        Some((texture_size.w, texture_size.h)),
+        &effect.effect,
+    )?;
+    if window_effect_debug_enabled() {
+        info!(
+            output = %output.name(),
+            window_id,
+            placement,
+            effect_texture_size = ?texture.size(),
+            display_rect = ?logical,
+            "window effect debug: pipeline applied"
+        );
+    }
+    let texture_size = texture.size();
+    let capture_origin = capture_origin_for_logical_rect(output_geo, rect, scale);
+    let geometry = Rectangle::new(capture_origin, (texture_size.w, texture_size.h).into());
+    let element = crate::backend::shader_effect::backdrop_shader_element_with_geometry(
+        renderer,
+        element_id,
+        commit_counter,
+        texture,
+        logical,
+        geometry,
+        logical,
+        logical,
+        &effect.effect,
+        1.0,
+        scale.x as f32,
+        [0.0, 0.0],
+        None,
+        0,
+        format!(
+            "window-effect:{}:{}:{}",
+            placement,
+            output.name(),
+            window_id
+        ),
+    )?;
+    if window_effect_debug_enabled() {
+        let geometry = smithay::backend::renderer::element::Element::geometry(&element, scale);
+        info!(
+            output = %output.name(),
+            window_id,
+            placement,
+            geometry = ?geometry,
+            "window effect debug: render element created"
+        );
+    }
+    Ok(vec![TtyRenderElements::Backdrop(element)])
+}
+
+fn expand_logical_rect(
+    rect: crate::ssd::LogicalRect,
+    outsets: crate::ssd::EffectOutsets,
+) -> crate::ssd::LogicalRect {
+    crate::ssd::LogicalRect::new(
+        rect.x.saturating_sub(outsets.left),
+        rect.y.saturating_sub(outsets.top),
+        rect.width
+            .saturating_add(outsets.left)
+            .saturating_add(outsets.right),
+        rect.height
+            .saturating_add(outsets.top)
+            .saturating_add(outsets.bottom),
     )
 }
 

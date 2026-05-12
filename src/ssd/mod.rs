@@ -21,7 +21,7 @@ use crate::backend::text::{LabelSpec, measure_label_intrinsic};
 
 pub use bridge::{
     DecorationBridgeError, WireCompiledEffect, WireDecorationChild, WireDecorationNode, WireProps,
-    WireStyle, WireWindowAction, decode_tree_json,
+    WireStyle, WireWindowAction, WireWindowEffectConfig, decode_tree_json,
 };
 pub use evaluator::{
     DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
@@ -647,9 +647,16 @@ pub struct ShaderStage {
 pub enum EffectInput {
     Backdrop,
     XrayBackdrop,
+    WindowSource(WindowSourceInclude),
     Shader(ShaderStage),
     Image(String),
     Named(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSourceInclude {
+    Full,
+    RootSurface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -709,6 +716,28 @@ pub struct BackgroundEffectConfig {
     pub effect: CompiledEffect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EffectOutsets {
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowEffectSlot {
+    pub effect: CompiledEffect,
+    pub outsets: EffectOutsets,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WindowEffectConfig {
+    pub behind: Option<WindowEffectSlot>,
+    pub behind_root_surface: Option<WindowEffectSlot>,
+    pub in_front: Option<WindowEffectSlot>,
+    pub replace: Option<WindowEffectSlot>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackdropBlur {
     pub radius: i32,
@@ -726,7 +755,10 @@ impl CompiledEffect {
     pub fn is_texture_backed(&self) -> bool {
         matches!(
             self.input,
-            EffectInput::Backdrop | EffectInput::XrayBackdrop | EffectInput::Shader(_)
+            EffectInput::Backdrop
+                | EffectInput::XrayBackdrop
+                | EffectInput::WindowSource(_)
+                | EffectInput::Shader(_)
         )
     }
 

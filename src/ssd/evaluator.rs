@@ -14,7 +14,8 @@ use super::window_model::{
 };
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
-    DecorationTree, WindowTransform, WireCompiledEffect, decode_tree_json,
+    DecorationTree, WindowEffectConfig, WindowTransform, WireCompiledEffect,
+    WireWindowEffectConfig, decode_tree_json,
 };
 use crate::{
     config::RuntimeDisplayConfigUpdate,
@@ -94,6 +95,7 @@ pub trait DecorationEvaluator {
 pub struct DecorationEvaluationResult {
     pub node: DecorationNode,
     pub transform: WindowTransform,
+    pub window_effects: Option<WindowEffectConfig>,
     pub dirty_node_ids: Vec<String>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
@@ -121,6 +123,7 @@ pub struct DecorationHandlerInvocation {
     pub invoked: bool,
     pub node: Option<DecorationNode>,
     pub transform: Option<WindowTransform>,
+    pub window_effects: Option<WindowEffectConfig>,
     pub dirty_window_ids: Vec<String>,
     pub dirty_window_node_ids: std::collections::HashMap<String, Vec<String>>,
     pub actions: Vec<RuntimeWindowAction>,
@@ -255,6 +258,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
         Ok(DecorationEvaluationResult {
             node: decode_tree_json(&json)?,
             transform: WindowTransform::default(),
+            window_effects: None,
             dirty_node_ids: Vec::new(),
             next_poll_in_ms: None,
             display_config: None,
@@ -428,6 +432,8 @@ struct RuntimeEvaluateResponse {
     ok: bool,
     serialized: Option<serde_json::Value>,
     transform: Option<WindowTransform>,
+    #[serde(rename = "windowEffects")]
+    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyNodeIds")]
     dirty_node_ids: Option<Vec<String>>,
     #[serde(rename = "nextPollInMs")]
@@ -496,6 +502,8 @@ struct RuntimeInvokeHandlerResponse {
     invoked: Option<bool>,
     serialized: Option<serde_json::Value>,
     transform: Option<WindowTransform>,
+    #[serde(rename = "windowEffects")]
+    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyWindowNodeIds")]
@@ -523,6 +531,8 @@ struct RuntimeStartCloseResponse {
     invoked: Option<bool>,
     serialized: Option<serde_json::Value>,
     transform: Option<WindowTransform>,
+    #[serde(rename = "windowEffects")]
+    window_effects: Option<WireWindowEffectConfig>,
     #[serde(rename = "dirtyWindowIds")]
     dirty_window_ids: Option<Vec<String>>,
     #[serde(rename = "dirtyWindowNodeIds")]
@@ -1113,6 +1123,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         Ok(DecorationEvaluationResult {
             node: decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?,
             transform: response.transform.unwrap_or_default(),
+            window_effects: response
+                .window_effects
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(DecorationEvaluationError::Bridge)?,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
@@ -1198,6 +1213,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         Ok(DecorationEvaluationResult {
             node: decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?,
             transform: response.transform.unwrap_or_default(),
+            window_effects: response
+                .window_effects
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(DecorationEvaluationError::Bridge)?,
             dirty_node_ids: response.dirty_node_ids.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
@@ -1442,6 +1462,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             invoked: response.invoked.unwrap_or(false),
             node,
             transform: response.transform,
+            window_effects: response
+                .window_effects
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(DecorationEvaluationError::Bridge)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),
@@ -1621,6 +1646,11 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             invoked: response.invoked.unwrap_or(false),
             node,
             transform: response.transform,
+            window_effects: response
+                .window_effects
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(DecorationEvaluationError::Bridge)?,
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
             dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
             actions: response.actions.unwrap_or_default(),

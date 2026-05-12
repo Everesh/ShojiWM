@@ -136,6 +136,7 @@ pub struct WindowDecorationState {
     pub layout_scale: f64,
     pub client_rect: LogicalRect,
     pub visual_transform: WindowTransform,
+    pub window_effects: Option<super::WindowEffectConfig>,
     pub content_clip: Option<ContentClip>,
     pub buffers: Vec<CachedDecorationBuffer>,
     pub shader_buffers: Vec<CachedShaderEffect>,
@@ -146,6 +147,8 @@ pub struct WindowDecorationState {
         std::collections::HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
     pub backdrop_cache:
         std::collections::HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
+    pub window_effect_cache:
+        std::collections::HashMap<String, crate::backend::shader_effect::WindowEffectElementState>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -876,10 +879,11 @@ impl ShojiWM {
                             cached.rounded_cache,
                             cached.shader_cache,
                             cached.backdrop_cache,
+                            cached.window_effect_cache,
                         )
                     })
                     .unwrap_or_default();
-                let (rounded_cache, shader_cache, backdrop_cache) = caches;
+                let (rounded_cache, shader_cache, backdrop_cache, window_effect_cache) = caches;
                 self.window_decorations.insert(
                     window,
                     WindowDecorationState {
@@ -889,6 +893,7 @@ impl ShojiWM {
                         layout_scale,
                         client_rect,
                         visual_transform: evaluation.transform,
+                        window_effects: evaluation.window_effects,
                         content_clip,
                         buffers,
                         shader_buffers,
@@ -897,6 +902,7 @@ impl ShojiWM {
                         rounded_cache,
                         shader_cache,
                         backdrop_cache,
+                        window_effect_cache,
                     },
                 );
                 self.schedule_redraw();
@@ -947,6 +953,7 @@ impl ShojiWM {
                     cached.client_rect = client_rect;
                     cached.snapshot = snapshot;
                     cached.visual_transform = evaluation.transform;
+                    cached.window_effects = evaluation.window_effects;
                     let clip_started_at = Instant::now();
                     let shared_edges = build_shared_edge_geometry_map(&cached.layout);
                     cached.content_clip =
@@ -1080,10 +1087,12 @@ impl ShojiWM {
                     let rebuild_started_at = Instant::now();
                     let next_tree = DecorationTree::new(evaluation.node);
                     let next_transform = evaluation.transform;
+                    let next_window_effects = evaluation.window_effects;
                     let dirty_node_ids = evaluation.dirty_node_ids;
                     let tree_changed = next_tree != cached.tree;
                     let mut layout_equivalent_state = None;
                     cached.snapshot = snapshot;
+                    cached.window_effects = next_window_effects;
 
                     if !tree_changed {
                         cached.visual_transform = next_transform;
@@ -1348,6 +1357,7 @@ impl ShojiWM {
                 pending_process_config_updates.push(evaluation.process_config.clone());
                 pending_process_actions.extend(evaluation.process_actions.clone());
                 let next_tree = DecorationTree::new(evaluation.node);
+                closing.decoration.window_effects = evaluation.window_effects;
                 let dirty_node_ids = evaluation.dirty_node_ids;
                 let tree_changed = next_tree != closing.decoration.tree;
                 if !tree_changed {
