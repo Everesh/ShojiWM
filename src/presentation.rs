@@ -6,7 +6,9 @@ use std::{
 };
 
 use smithay::{
-    backend::renderer::element::{RenderElementState, RenderElementStates},
+    backend::renderer::element::{
+        Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
+    },
     desktop::{
         Space, Window, layer_map_for_output,
         utils::{
@@ -29,6 +31,8 @@ use smithay::{
 use tracing::info;
 
 use crate::state::ShojiWM;
+
+const PRIMARY_OUTPUT_KEEP_WITHIN_PERCENT: i64 = 110;
 
 /// Primary scanout output comparison that picks the output with greater visible area.
 ///
@@ -54,6 +58,98 @@ pub fn area_primary_scanout_compare<'a>(
     } else {
         current_output
     }
+}
+
+fn prefer_next_primary_scanout_compare<'a>(
+    _current_output: &'a smithay::output::Output,
+    _current_state: &RenderElementState,
+    next_output: &'a smithay::output::Output,
+    _next_state: &RenderElementState,
+) -> &'a smithay::output::Output {
+    next_output
+}
+
+fn stable_primary_output_for_window(space: &Space<Window>, window: &Window) -> Option<Output> {
+    let rect = space.element_bbox(window)?;
+    let mut overlaps = Vec::new();
+    for output in space.outputs() {
+        let Some(geometry) = space.output_geometry(output) else {
+            continue;
+        };
+        let area = geometry
+            .intersection(rect)
+            .map(|overlap| i64::from(overlap.size.w) * i64::from(overlap.size.h))
+            .unwrap_or(0);
+        if area > 0 {
+            overlaps.push((output.clone(), area));
+        }
+    }
+
+    if overlaps.is_empty() {
+        return None;
+    }
+
+    let mut current_primary = None;
+    window.with_surfaces(|surface, states| {
+        if current_primary.is_none() {
+            current_primary = surface_primary_scanout_output(surface, states);
+        }
+    });
+
+    let (best_output, best_area) = overlaps
+        .iter()
+        .max_by(|(left_output, left_area), (right_output, right_area)| {
+            left_area
+                .cmp(right_area)
+                .then_with(|| right_output.name().cmp(&left_output.name()))
+        })
+        .map(|(output, area)| (output.clone(), *area))?;
+
+    if let Some(current_primary) = current_primary {
+        let current_area = overlaps
+            .iter()
+            .find_map(|(output, area)| (output == &current_primary).then_some(*area))
+            .unwrap_or(0);
+        // Keep the existing primary while it is still close to the largest logical overlap.
+        // Without this hysteresis, fractional-scale and damage rounding near an output boundary can
+        // feed back into the client's preferred scale and make the primary output flip every frame.
+        if current_area > 0
+            && current_area.saturating_mul(PRIMARY_OUTPUT_KEEP_WITHIN_PERCENT)
+                >= best_area.saturating_mul(100)
+        {
+            return Some(current_primary);
+        }
+    }
+
+    Some(best_output)
+}
+
+fn window_had_presented_surface(
+    window: &Window,
+    render_element_states: &RenderElementStates,
+) -> bool {
+    let mut presented = false;
+    window.with_surfaces(|surface, _| {
+        if render_element_states.element_was_presented(Id::from_wayland_resource(surface)) {
+            presented = true;
+        }
+    });
+    presented
+}
+
+fn synthetic_presented_states_for_window(window: &Window) -> RenderElementStates {
+    let mut states = RenderElementStates::default();
+    window.with_surfaces(|surface, _| {
+        states.states.insert(
+            Id::from_wayland_resource(surface),
+            RenderElementState {
+                visible_area: usize::MAX,
+                presentation_state: RenderElementPresentationState::Rendering { reason: None },
+                needs_capture: false,
+            },
+        );
+    });
+    states
 }
 
 fn frame_callback_debug_enabled() -> bool {
@@ -107,6 +203,32 @@ pub fn update_primary_scanout_output(
     // output cadence was only ~60 Hz even when the monitor was actually running at 66 Hz.
     let throttle_debug = frame_throttle_debug_enabled();
     space.elements().for_each(|window| {
+        let Some(selected_primary_output) = stable_primary_output_for_window(space, window) else {
+            return;
+        };
+
+        if &selected_primary_output != output {
+            if !window_had_presented_surface(window, render_element_states) {
+                return;
+            }
+
+            // The current output may repaint before the selected primary output. If the window was
+            // actually presented on this frame, update the primary immediately so scale and frame
+            // callbacks do not bounce through the stale output until the other monitor repaints.
+            let synthetic_states = synthetic_presented_states_for_window(window);
+            window.with_surfaces(|surface, states| {
+                update_surface_primary_scanout_output(
+                    surface,
+                    &selected_primary_output,
+                    states,
+                    None,
+                    &synthetic_states,
+                    prefer_next_primary_scanout_compare,
+                );
+            });
+            return;
+        }
+
         window.with_surfaces(|surface, states| {
             if throttle_debug {
                 use smithay::backend::renderer::element::Id;
@@ -127,7 +249,7 @@ pub fn update_primary_scanout_output(
                 states,
                 None,
                 render_element_states,
-                area_primary_scanout_compare,
+                prefer_next_primary_scanout_compare,
             );
         });
     });
