@@ -359,6 +359,7 @@ impl ShojiWM {
 
         let previous_root =
             transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+        let previous_text_buffers = decoration.text_buffers.clone();
 
         if let Some(node) = invocation.node.clone() {
             decoration.tree = crate::ssd::DecorationTree::new(node);
@@ -373,11 +374,12 @@ impl ShojiWM {
                 let order_map = build_render_order_map(&decoration.layout);
                 decoration.buffers = build_cached_buffers(&decoration.layout, &order_map);
                 decoration.shader_buffers = build_shader_buffers(&decoration.layout, &order_map);
-                decoration.text_buffers = build_text_buffers(
+                decoration.text_buffers = build_text_buffers_with_fallback(
                     &decoration.layout,
                     &order_map,
                     raster_scale,
                     &mut self.text_rasterizer,
+                    &previous_text_buffers,
                 );
                 decoration.icon_buffers = build_icon_buffers(
                     &decoration.layout,
@@ -808,6 +810,11 @@ impl ShojiWM {
                     previous_root,
                     transformed_root_rect(layout.root.rect, evaluation.transform),
                 );
+                let previous_text_buffers = self
+                    .window_decorations
+                    .get(&window)
+                    .map(|cached| cached.text_buffers.clone())
+                    .unwrap_or_default();
                 let clip_started_at = Instant::now();
                 let shared_edges = build_shared_edge_geometry_map(&layout);
                 let content_clip = content_clip_for_layout(&tree, &layout, &shared_edges);
@@ -822,11 +829,12 @@ impl ShojiWM {
                 let mut shader_buffers = build_shader_buffers(&layout, &order_map);
                 let shader_ms = shader_started_at.elapsed().as_secs_f64() * 1000.0;
                 let text_started_at = Instant::now();
-                let text_buffers = build_text_buffers(
+                let text_buffers = build_text_buffers_with_fallback(
                     &layout,
                     &order_map,
                     window_raster_scale,
                     &mut self.text_rasterizer,
+                    &previous_text_buffers,
                 );
                 let text_ms = text_started_at.elapsed().as_secs_f64() * 1000.0;
                 let icon_started_at = Instant::now();
@@ -969,11 +977,13 @@ impl ShojiWM {
                     cached.shader_buffers = build_shader_buffers(&cached.layout, &order_map);
                     let shader_ms = shader_started_at.elapsed().as_secs_f64() * 1000.0;
                     let text_started_at = Instant::now();
-                    cached.text_buffers = build_text_buffers(
+                    let previous_text_buffers = cached.text_buffers.clone();
+                    cached.text_buffers = build_text_buffers_with_fallback(
                         &cached.layout,
                         &order_map,
                         window_raster_scale,
                         &mut self.text_rasterizer,
+                        &previous_text_buffers,
                     );
                     let text_ms = text_started_at.elapsed().as_secs_f64() * 1000.0;
                     let icon_started_at = Instant::now();
@@ -1123,11 +1133,12 @@ impl ShojiWM {
                                     &previous_shader_buffers,
                                     &mut cached.shader_buffers,
                                 );
-                                cached.text_buffers = build_text_buffers(
+                                cached.text_buffers = build_text_buffers_with_fallback(
                                     &cached.layout,
                                     &order_map,
                                     window_raster_scale,
                                     &mut self.text_rasterizer,
+                                    &previous_text_buffers,
                                 );
                                 cached.icon_buffers = build_icon_buffers(
                                     &cached.layout,
@@ -1160,12 +1171,13 @@ impl ShojiWM {
                                 cached.shader_buffers = merged_shader_buffers;
                                 cached.text_buffers = merge_text_buffers(
                                     &previous_text_buffers,
-                                    rebuild_partial_text_buffers(
+                                    rebuild_partial_text_buffers_with_fallback(
                                         &cached.layout,
                                         &order_map,
                                         &dirty_node_ids,
                                         window_raster_scale,
                                         &mut self.text_rasterizer,
+                                        &previous_text_buffers,
                                     ),
                                     &dirty_node_ids,
                                 );
@@ -1202,11 +1214,12 @@ impl ShojiWM {
                                 &previous_shader_buffers,
                                 &mut cached.shader_buffers,
                             );
-                            cached.text_buffers = build_text_buffers(
+                            cached.text_buffers = build_text_buffers_with_fallback(
                                 &cached.layout,
                                 &order_map,
                                 window_raster_scale,
                                 &mut self.text_rasterizer,
+                                &previous_text_buffers,
                             );
                             cached.icon_buffers = build_icon_buffers(
                                 &cached.layout,
@@ -1279,11 +1292,13 @@ impl ShojiWM {
                     );
                     if force_async_asset_refresh {
                         let order_map = build_render_order_map(&cached.layout);
-                        cached.text_buffers = build_text_buffers(
+                        let previous_text_buffers = cached.text_buffers.clone();
+                        cached.text_buffers = build_text_buffers_with_fallback(
                             &cached.layout,
                             &order_map,
                             window_raster_scale,
                             &mut self.text_rasterizer,
+                            &previous_text_buffers,
                         );
                         cached.icon_buffers = build_icon_buffers(
                             &cached.layout,
@@ -1306,11 +1321,13 @@ impl ShojiWM {
                     animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
                 } else if force_async_asset_refresh {
                     let order_map = build_render_order_map(&cached.layout);
-                    cached.text_buffers = build_text_buffers(
+                    let previous_text_buffers = cached.text_buffers.clone();
+                    cached.text_buffers = build_text_buffers_with_fallback(
                         &cached.layout,
                         &order_map,
                         window_raster_scale,
                         &mut self.text_rasterizer,
+                        &previous_text_buffers,
                     );
                     cached.icon_buffers = build_icon_buffers(
                         &cached.layout,
@@ -1394,11 +1411,12 @@ impl ShojiWM {
                                 build_cached_buffers(&closing.decoration.layout, &order_map);
                             closing.decoration.shader_buffers =
                                 build_shader_buffers(&closing.decoration.layout, &order_map);
-                            closing.decoration.text_buffers = build_text_buffers(
+                            closing.decoration.text_buffers = build_text_buffers_with_fallback(
                                 &closing.decoration.layout,
                                 &order_map,
                                 closing_raster_scale,
                                 &mut self.text_rasterizer,
+                                &previous_text_buffers,
                             );
                             closing.decoration.icon_buffers = build_icon_buffers(
                                 &closing.decoration.layout,
@@ -1430,12 +1448,13 @@ impl ShojiWM {
                             closing.decoration.shader_buffers = merged_shader_buffers;
                             closing.decoration.text_buffers = merge_text_buffers(
                                 &previous_text_buffers,
-                                rebuild_partial_text_buffers(
+                                rebuild_partial_text_buffers_with_fallback(
                                     &closing.decoration.layout,
                                     &order_map,
                                     &dirty_node_ids,
                                     closing_raster_scale,
                                     &mut self.text_rasterizer,
+                                    &previous_text_buffers,
                                 ),
                                 &dirty_node_ids,
                             );
@@ -1470,11 +1489,12 @@ impl ShojiWM {
                         let order_map = build_render_order_map(&layout);
                         let buffers = build_cached_buffers(&layout, &order_map);
                         let shader_buffers = build_shader_buffers(&layout, &order_map);
-                        let text_buffers = build_text_buffers(
+                        let text_buffers = build_text_buffers_with_fallback(
                             &layout,
                             &order_map,
                             closing_raster_scale,
                             &mut self.text_rasterizer,
+                            &previous_text_buffers,
                         );
                         let icon_buffers = build_icon_buffers(
                             &layout,
@@ -1528,11 +1548,13 @@ impl ShojiWM {
                 }
                 if force_async_asset_refresh {
                     let order_map = build_render_order_map(&closing.decoration.layout);
-                    closing.decoration.text_buffers = build_text_buffers(
+                    let previous_text_buffers = closing.decoration.text_buffers.clone();
+                    closing.decoration.text_buffers = build_text_buffers_with_fallback(
                         &closing.decoration.layout,
                         &order_map,
                         closing_raster_scale,
                         &mut self.text_rasterizer,
+                        &previous_text_buffers,
                     );
                     closing.decoration.icon_buffers = build_icon_buffers(
                         &closing.decoration.layout,
@@ -1589,11 +1611,13 @@ impl ShojiWM {
                     build_cached_buffers(&closing.decoration.layout, &order_map);
                 closing.decoration.shader_buffers =
                     build_shader_buffers(&closing.decoration.layout, &order_map);
-                closing.decoration.text_buffers = build_text_buffers(
+                let previous_text_buffers = closing.decoration.text_buffers.clone();
+                closing.decoration.text_buffers = build_text_buffers_with_fallback(
                     &closing.decoration.layout,
                     &order_map,
                     closing_raster_scale,
                     &mut self.text_rasterizer,
+                    &previous_text_buffers,
                 );
                 closing.decoration.icon_buffers = build_icon_buffers(
                     &closing.decoration.layout,
@@ -2126,11 +2150,12 @@ fn suggested_window_offset(layout: &ComputedDecorationTree) -> Option<(i32, i32)
     Some(((slot.x - root.x).max(0), (slot.y - root.y).max(0)))
 }
 
-fn build_text_buffers(
+fn build_text_buffers_with_fallback(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
+    previous: &[CachedDecorationLabel],
 ) -> Vec<CachedDecorationLabel> {
     let shared_edges = build_shared_edge_geometry_map(layout);
     let mut buffers = Vec::new();
@@ -2142,6 +2167,7 @@ fn build_text_buffers(
         &shared_edges,
         raster_scale,
         rasterizer,
+        previous,
         &mut buffers,
     );
     buffers
@@ -2192,12 +2218,13 @@ fn rebuild_partial_buffers(
     build_cached_buffers_and_shaders(layout, order_map, Some(&dirty_node_ids), &shared_edges)
 }
 
-fn rebuild_partial_text_buffers(
+fn rebuild_partial_text_buffers_with_fallback(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: &[String],
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
+    previous: &[CachedDecorationLabel],
 ) -> Vec<CachedDecorationLabel> {
     let dirty_node_ids = dirty_node_ids
         .iter()
@@ -2213,6 +2240,7 @@ fn rebuild_partial_text_buffers(
         &shared_edges,
         raster_scale,
         rasterizer,
+        previous,
         &mut buffers,
     );
     buffers
@@ -2811,6 +2839,7 @@ fn collect_text_buffers(
     shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
+    previous: &[CachedDecorationLabel],
     buffers: &mut Vec<CachedDecorationLabel>,
 ) {
     if node.style.visible == Some(false) {
@@ -2826,6 +2855,7 @@ fn collect_text_buffers(
             shared_edges,
             raster_scale,
             rasterizer,
+            previous,
             buffers,
         );
     }
@@ -2869,31 +2899,68 @@ fn collect_text_buffers(
         raster_scale,
     };
 
+    let stable_key = format!("{path}:label");
+    let order = *order_map.get(&stable_key).unwrap_or(&usize::MAX);
+    let current_rect_precise = shared_geometry
+        .map(|geometry| geometry.rect_precise)
+        .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect));
+    let current_clip_rect_precise = shared_geometry
+        .and_then(|geometry| geometry.clip_rect_precise)
+        .or_else(|| {
+            node.resolved_effective_clip
+                .map(|clip| precise_rect_from_resolved(clip.rect))
+        });
+    let current_clip_radius_precise = node
+        .resolved_effective_clip
+        .map(|clip| clip.radius.to_f32().max(0.0));
+
     if let Some(buffer) = rasterizer.render_label(&spec) {
         let mut buffer = buffer;
         buffer.owner_node_id = node.stable_id.clone();
-        buffer.stable_key = format!("{path}:label");
-        buffer.order = *order_map
-            .get(&format!("{path}:label"))
-            .unwrap_or(&usize::MAX);
-        buffer.rect_precise = Some(
-            shared_geometry
-                .map(|geometry| geometry.rect_precise)
-                .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect)),
-        );
+        buffer.stable_key = stable_key;
+        buffer.order = order;
+        buffer.rect_precise = Some(current_rect_precise);
         buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
         buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
-        buffer.clip_rect_precise = shared_geometry
-            .and_then(|geometry| geometry.clip_rect_precise)
-            .or_else(|| {
-                node.resolved_effective_clip
-                    .map(|clip| precise_rect_from_resolved(clip.rect))
-            });
-        buffer.clip_radius_precise = node
-            .resolved_effective_clip
-            .map(|clip| clip.radius.to_f32().max(0.0));
+        buffer.clip_rect_precise = current_clip_rect_precise;
+        buffer.clip_radius_precise = current_clip_radius_precise;
+        buffers.push(buffer);
+    } else if let Some(mut buffer) =
+        fallback_text_buffer(previous, node.stable_id.as_deref(), &stable_key)
+    {
+        // Text rasterization is asynchronous. Keep the previous texture visible until the new
+        // spec is ready, otherwise changing a title/label produces a one-frame blank flash.
+        buffer.owner_node_id = node.stable_id.clone();
+        buffer.stable_key = stable_key;
+        buffer.order = order;
+        buffer.rect = spec.rect;
+        buffer.rect_precise = Some(current_rect_precise);
+        buffer.clip_rect = node.effective_clip.map(|clip| clip.rect);
+        buffer.clip_radius = node.effective_clip.map(|clip| clip.radius).unwrap_or(0);
+        buffer.clip_rect_precise = current_clip_rect_precise;
+        buffer.clip_radius_precise = current_clip_radius_precise;
+        buffer.color = spec.color;
         buffers.push(buffer);
     }
+}
+
+fn fallback_text_buffer(
+    previous: &[CachedDecorationLabel],
+    owner_node_id: Option<&str>,
+    stable_key: &str,
+) -> Option<CachedDecorationLabel> {
+    if let Some(owner_node_id) = owner_node_id
+        && let Some(buffer) = previous
+            .iter()
+            .find(|buffer| buffer.owner_node_id.as_deref() == Some(owner_node_id))
+    {
+        return Some(buffer.clone());
+    }
+
+    previous
+        .iter()
+        .find(|buffer| buffer.stable_key == stable_key)
+        .cloned()
 }
 
 fn collect_icon_buffers(
