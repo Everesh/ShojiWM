@@ -1023,7 +1023,6 @@ impl DecorationStyle {
 
     fn clips_children(&self) -> bool {
         matches!(self.overflow, Some(Overflow::Hidden))
-            || (self.border.is_some() && !matches!(self.overflow, Some(Overflow::Visible)))
     }
 }
 
@@ -2896,7 +2895,7 @@ fn effective_clip_for_node_resolved(
     content_rect: ResolvedLogicalRect,
     scale: f64,
 ) -> Option<ResolvedDecorationClip> {
-    let node_clip = node.style.clips_children().then(|| {
+    let node_clip = node_clips_children(node).then(|| {
         let border_width = node
             .style
             .border
@@ -2916,6 +2915,13 @@ fn effective_clip_for_node_resolved(
         (None, Some(current)) => Some(current),
         (None, None) => None,
     }
+}
+
+fn node_clips_children(node: &DecorationNode) -> bool {
+    node.style.clips_children()
+        || (matches!(node.kind, DecorationNodeKind::WindowBorder)
+            && node.style.border.is_some()
+            && !matches!(node.style.overflow, Some(Overflow::Visible)))
 }
 
 fn intersect_decoration_clips(
@@ -3114,6 +3120,86 @@ mod tests {
                 .round_to_i32(),
             18
         );
+    }
+
+    #[test]
+    fn bordered_box_does_not_clip_children_without_overflow_hidden() {
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_style(DecorationStyle {
+            border: Some(BorderStyle {
+                width: 2,
+                color: Color::WHITE,
+            }),
+            border_radius: Some(20),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 50))
+            .expect("layout should succeed");
+
+        assert!(layout.root.children[0].resolved_effective_clip.is_none());
+    }
+
+    #[test]
+    fn overflow_hidden_box_clips_children_with_rounded_radius() {
+        let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
+            direction: LayoutDirection::Column,
+        }))
+        .with_style(DecorationStyle {
+            overflow: Some(Overflow::Hidden),
+            border: Some(BorderStyle {
+                width: 2,
+                color: Color::WHITE,
+            }),
+            border_radius: Some(20),
+            ..Default::default()
+        })
+        .with_children(vec![
+            DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+        ]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 50))
+            .expect("layout should succeed");
+        let clip = layout.root.children[0]
+            .resolved_effective_clip
+            .expect("child should inherit rounded clip");
+
+        assert_eq!(clip.radius.round_to_i32(), 18);
+    }
+
+    #[test]
+    fn overflow_hidden_button_clips_children_with_rounded_radius() {
+        let root = DecorationNode::new(DecorationNodeKind::Button(ButtonNode {
+            action: WindowAction::Close,
+        }))
+        .with_style(DecorationStyle {
+            overflow: Some(Overflow::Hidden),
+            border: Some(BorderStyle {
+                width: 1,
+                color: Color::WHITE,
+            }),
+            border_radius: Some(12),
+            ..Default::default()
+        })
+        .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]);
+
+        let layout = DecorationTree::new(root)
+            .layout(LogicalRect::new(0, 0, 100, 50))
+            .expect("layout should succeed");
+        let clip = layout.root.children[0]
+            .resolved_effective_clip
+            .expect("button child should inherit rounded clip");
+
+        assert_eq!(clip.radius.round_to_i32(), 11);
     }
 
     #[test]
