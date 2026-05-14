@@ -1,31 +1,13 @@
-[package]
-name = "shoji_wm"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "src/shojiwm",
+    "src/shojiwm_protocol",
+    "src/shojiwm_ipc",
+    "src/xdg-desktop-portal-shojiwm",
+]
 
-[dependencies]
-bitflags = "2.11.0"
-thiserror = "2.0.12"
-smithay = {
-    git = "https://github.com/bea4dev/smithay.git",
-    branch = "fix-xwayland-multi-monitor",
-    features = ["use_system_lib", "xwayland"]
-}
-smithay-drm-extras = {
-    git = "https://github.com/bea4dev/smithay.git",
-    branch = "fix-xwayland-multi-monitor",
-    package = "smithay-drm-extras",
-    default-features = false
-}
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-xkbcommon = "0.9.0"
-xcursor = "0.3.10"
-cgmath = "0.18.0"
-fontdb = "0.16.2"
-fontdue = "0.9.3"
-cosmic-text = "0.17.2"
-png = "0.17.16"
-resvg = "0.45.1"
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

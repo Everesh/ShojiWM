@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.shojiwm
+Exec=/usr/bin/xdg-desktop-portal-shojiwm
+SystemdService=xdg-desktop-portal-shojiwm.service

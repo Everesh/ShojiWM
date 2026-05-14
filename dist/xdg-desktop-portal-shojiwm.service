@@ -1,0 +1,11 @@
+[Unit]
+Description=Portal service (ShojiWM implementation)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.shojiwm
+ExecStart=/usr/bin/xdg-desktop-portal-shojiwm
+Restart=on-failure
+TimeoutStopSec=10

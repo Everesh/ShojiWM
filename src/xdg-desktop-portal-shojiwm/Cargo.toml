@@ -1,0 +1,23 @@
+[package]
+name = "xdg-desktop-portal-shojiwm"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "xdg-desktop-portal-shojiwm"
+path = "src/main.rs"
+
+[dependencies]
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+serde = { version = "1.0.219", features = ["derive"] }
+futures-util = "0.3"
+iced = { version = "0.14", features = ["tokio"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+rustix = { version = "1.1", features = ["fs", "mm", "shm"] }
+pipewire = { version = "0.9", features = ["v0_3_77"] }
+libspa = { version = "0.9", features = ["v0_3_65"] }

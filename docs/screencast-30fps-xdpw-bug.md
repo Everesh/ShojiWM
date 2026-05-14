@@ -75,7 +75,27 @@ Until upstream merges a fix, end users have two workable options.
 
 ## Workarounds
 
-### Option A — Force a smaller PipeWire graph quantum (recommended)
+### Option 0 — Use `xdg-desktop-portal-shojiwm` (recommended on ShojiWM)
+
+ShojiWM ships its own portal backend
+(`src/xdg-desktop-portal-shojiwm/`) which sidesteps the bug entirely:
+
+- The PipeWire stream is connected with
+  `PW_STREAM_FLAG_DRIVER | PW_STREAM_FLAG_ALLOC_BUFFERS`.
+- The wlr-screencopy client and the PipeWire stream live on a **single thread**
+  (the wayland fd is attached to the PipeWire main loop via `add_io`).
+- Each wlr-screencopy `ready` event directly calls `pw_stream_queue_buffer`,
+  which both delivers the frame to consumers and drives the PipeWire cycle.
+  Cycle pacing therefore tracks the compositor's vblank rate, not the audio
+  sink's quantum.
+
+Verified result on this machine: OBS observed at **~65fps** on a 66 Hz output
+with `clock.force-quantum=0` (PipeWire default), versus **46.875 fps** on
+xdpw under the same conditions.
+
+The remaining options below are kept as fallbacks for users running xdpw.
+
+### Option A — Force a smaller PipeWire graph quantum
 
 Force the entire PipeWire graph to tick at a shorter interval, so that even
 when the video stream is scheduled by the audio driver it is no longer
@@ -128,7 +148,8 @@ We verified each layer of the stack independently:
 | Setting `clock.force-quantum=256` in PipeWire | OBS jumps to 60 fps | Confirms audio-quantum coupling is the bottleneck. |
 | Restricting `linux-dmabuf` feedback to LINEAR only | No change | Rules out compressed-modifier slow path. |
 | Setting `xdpw` `max_fps=240` | No change | Rules out xdpw's own rate limiter. |
+| Running our `xdg-desktop-portal-shojiwm` with DRIVER + ALLOC_BUFFERS + wayland-driven queue | OBS at ~65fps on a 66 Hz output | Confirms the architectural fix and matches what xdph upstream PR #370 attempts. |
 
 The combination — wf-recorder fine, modifier-agnostic, audio-quantum-sensitive,
-xdph-fork-fixes-it — uniquely points at the missing `PW_STREAM_FLAG_DRIVER` in
-xdpw post `ca7a3e2e`.
+xdph-fork-fixes-it, our DRIVER-flag rewrite reproduces the fix — uniquely
+points at the missing `PW_STREAM_FLAG_DRIVER` in xdpw post `ca7a3e2e`.
