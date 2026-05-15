@@ -155,6 +155,15 @@ struct AppState {
     // SEGV when OBS quit.
     dying: bool,
     stop_flag: Option<Arc<AtomicBool>>,
+
+    // Renegotiation: set in the session BufferSize handler when constraints
+    // change AFTER the initial Done (e.g. compositor saw the toplevel resize
+    // and called `update_constraints`). The io callback picks this up after
+    // dispatch_pending and calls `pw_stream_update_params` so PipeWire
+    // reallocates buffers at the new size.
+    needs_renegotiate: bool,
+    negotiated_width: u32,
+    negotiated_height: u32,
 }
 
 struct DiscoveredToplevel {
@@ -226,6 +235,9 @@ fn run(
         capture_kicked: false,
         dying: false,
         stop_flag: Some(stop.clone()),
+        needs_renegotiate: false,
+        negotiated_width: 0,
+        negotiated_height: 0,
     };
 
     // Bind globals (round 1), receive toplevel list events (round 2 + 3).
@@ -308,6 +320,8 @@ fn run(
         format = ?state.adv_format,
         "toplevel session constraints negotiated"
     );
+    state.negotiated_width = state.adv_width;
+    state.negotiated_height = state.adv_height;
 
     // Build PipeWire stream with the negotiated dims.
     let stream = pw::stream::StreamRc::new(
@@ -378,6 +392,47 @@ fn run(
         let mut state = s_for_io.borrow_mut();
         if let Err(e) = eq.dispatch_pending(&mut *state) {
             tracing::error!("wayland dispatch: {e}");
+        }
+        // Renegotiation: if a session BufferSize event flipped the flag,
+        // push the new format / buffer params to PipeWire. PW reallocates
+        // its buffers and our add_buffer/remove_buffer callbacks recreate
+        // the wl_buffer wraps at the new dims.
+        if state.needs_renegotiate {
+            state.needs_renegotiate = false;
+            let stream_clone = state.stream.clone();
+            let framerate = state.spec.framerate;
+            let new_w = state.adv_width;
+            let new_h = state.adv_height;
+            state.negotiated_width = new_w;
+            state.negotiated_height = new_h;
+            if let Some(pending) = state.pending_frame.take() {
+                pending.frame.destroy();
+            }
+            if let Some(stream) = stream_clone {
+                tracing::info!(
+                    new_w, new_h, "toplevel: pushing renegotiated PW stream params"
+                );
+                match (
+                    build_video_format_param(new_w, new_h, framerate),
+                    build_buffers_param(new_w, new_h),
+                ) {
+                    (Ok(fbytes), Ok(bbytes)) => {
+                        if let (Some(fpod), Some(bpod)) =
+                            (Pod::from_bytes(&fbytes), Pod::from_bytes(&bbytes))
+                        {
+                            let mut params = [fpod, bpod];
+                            if let Err(e) = stream.update_params(&mut params) {
+                                tracing::warn!("update_params failed: {e:?}");
+                            } else {
+                                state.capture_kicked = false;
+                            }
+                        }
+                    }
+                    (e1, e2) => {
+                        tracing::warn!(?e1, ?e2, "build params failed during renegotiate");
+                    }
+                }
+            }
         }
         let _ = conn_for_io.flush();
     });
@@ -549,6 +604,14 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppState {
     ) {
         match event {
             ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
+                // BufferSize received AFTER the initial Done is a
+                // renegotiation (the compositor saw the source resize).
+                // Flag it so the io callback can swap in fresh PW params.
+                if state.adv_done
+                    && (state.negotiated_width != width || state.negotiated_height != height)
+                {
+                    state.needs_renegotiate = true;
+                }
                 state.adv_width = width;
                 state.adv_height = height;
             }

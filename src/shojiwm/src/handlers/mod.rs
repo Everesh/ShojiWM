@@ -184,6 +184,7 @@ impl ImageCopyCaptureHandler for ShojiWM {
                 frame,
                 target: CaptureTarget::Output(weak.clone()),
                 draw_cursor,
+                session: session.clone(),
             });
             return;
         }
@@ -195,6 +196,7 @@ impl ImageCopyCaptureHandler for ShojiWM {
                 frame,
                 target: CaptureTarget::Toplevel(weak.clone()),
                 draw_cursor,
+                session: session.clone(),
             });
             return;
         }

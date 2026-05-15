@@ -25,7 +25,9 @@ use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle};
-use smithay::wayland::image_copy_capture::{CaptureFailureReason, Frame};
+use smithay::wayland::image_copy_capture::{
+    BufferConstraints, CaptureFailureReason, Frame, SessionRef,
+};
 use smithay::wayland::shm;
 
 use crate::backend::tty::TtyRenderElements;
@@ -52,6 +54,10 @@ pub struct PendingCapture {
     /// "Show cursor" checkbox). When false, render functions skip the cursor
     /// elements before drawing the frame.
     pub draw_cursor: bool,
+    /// The session this frame belongs to. Kept so the render path can push
+    /// updated buffer constraints when the captured target resizes — the
+    /// session events trigger the client to allocate a fresh buffer.
+    pub session: SessionRef,
 }
 
 pub enum CaptureTarget {
@@ -134,6 +140,7 @@ pub fn process_image_copy_capture_for_toplevels(
             frame,
             target,
             draw_cursor,
+            session,
         } = entry;
         let CaptureTarget::Toplevel(weak) = target else {
             continue;
@@ -142,6 +149,41 @@ pub fn process_image_copy_capture_for_toplevels(
             frame.fail(CaptureFailureReason::Unknown);
             continue;
         };
+
+        // Detect window resize. The session advertised a buffer size when it
+        // was created; if the window's current desired size differs (e.g.
+        // user dragged a resize edge), the client's buffer is the wrong
+        // shape and we must push fresh constraints + fail this frame so the
+        // client allocates a new one.
+        if let Some(window) = space.elements().find(|w| {
+            w.user_data()
+                .get::<ForeignToplevelHandle>()
+                .is_some_and(|h| h.matches(&handle))
+        }) && let Some(desired) = compute_desired_buffer_size(space, window)
+        {
+            let buffer_dims = smithay::wayland::shm::with_buffer_contents(
+                &frame.buffer(),
+                |_, _, data| (data.width, data.height),
+            );
+            if let Ok((bw, bh)) = buffer_dims
+                && (bw != desired.w || bh != desired.h)
+            {
+                tracing::debug!(
+                    bw, bh, desired_w = desired.w, desired_h = desired.h,
+                    "toplevel resized; pushing new constraints"
+                );
+                session.update_constraints(BufferConstraints {
+                    size: desired,
+                    shm: vec![
+                        smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888,
+                    ],
+                    dma: None,
+                });
+                frame.fail(CaptureFailureReason::BufferConstraints);
+                continue;
+            }
+        }
+
         match render_frame_for_toplevel(
             renderer,
             space,
@@ -162,6 +204,29 @@ pub fn process_image_copy_capture_for_toplevels(
             }
         }
     }
+}
+
+/// Compute what the buffer size for a window's capture should be *right now*
+/// (mirrors the logic in `resolve_source_size` for toplevel sources). Used
+/// to detect when an in-flight session's advertised constraints have gone
+/// stale because the window was resized.
+fn compute_desired_buffer_size(
+    space: &Space<Window>,
+    window: &Window,
+) -> Option<smithay::utils::Size<i32, smithay::utils::Buffer>> {
+    let geom = window.geometry();
+    if geom.size.w <= 0 || geom.size.h <= 0 {
+        return None;
+    }
+    let scale = space
+        .outputs_for_element(window)
+        .into_iter()
+        .next()
+        .map(|o| o.current_scale().fractional_scale())
+        .unwrap_or(1.0);
+    let w = ((geom.size.w as f64) * scale).round().max(1.0) as i32;
+    let h = ((geom.size.h as f64) * scale).round().max(1.0) as i32;
+    Some((w, h).into())
 }
 
 fn render_frame_for_toplevel(
