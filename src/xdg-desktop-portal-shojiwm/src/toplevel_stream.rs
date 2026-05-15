@@ -24,9 +24,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 
 use pipewire as pw;
@@ -349,10 +349,9 @@ fn run(
     };
     let format_bytes = build_video_format_param(adv_width, adv_height, spec.framerate)?;
     let buffers_bytes = build_buffers_param(adv_width, adv_height)?;
-    let format_pod =
-        Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
-    let buffers_pod = Pod::from_bytes(&buffers_bytes)
-        .ok_or("buffers POD parse failed".to_string())?;
+    let format_pod = Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
+    let buffers_pod =
+        Pod::from_bytes(&buffers_bytes).ok_or("buffers POD parse failed".to_string())?;
     let mut params = [format_pod, buffers_pod];
     stream.connect(
         spa::utils::Direction::Output,
@@ -630,16 +629,15 @@ impl AppState {
     fn on_add_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
         let stride = (self.adv_width * 4) as i32;
         let size = stride as usize * self.adv_height as usize;
-        let memfd = match rustix::fs::memfd_create(
-            "shojiwm-portal-pwbuf",
-            rustix::fs::MemfdFlags::CLOEXEC,
-        ) {
-            Ok(fd) => fd,
-            Err(e) => {
-                tracing::error!("memfd_create: {e}");
-                return;
-            }
-        };
+        let memfd =
+            match rustix::fs::memfd_create("shojiwm-portal-pwbuf", rustix::fs::MemfdFlags::CLOEXEC)
+            {
+                Ok(fd) => fd,
+                Err(e) => {
+                    tracing::error!("memfd_create: {e}");
+                    return;
+                }
+            };
         if let Err(e) = rustix::fs::ftruncate(&memfd, size as u64) {
             tracing::error!("ftruncate: {e}");
             return;
@@ -702,11 +700,7 @@ impl AppState {
         );
     }
 
-    fn on_remove_buffer(
-        &mut self,
-        _stream: &pw::stream::Stream,
-        buffer: *mut pw::sys::pw_buffer,
-    ) {
+    fn on_remove_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
         let key = buffer as usize;
         if let Some(slot) = self.pw_buffer_slots.remove(&key) {
             slot.wl_buffer.destroy();

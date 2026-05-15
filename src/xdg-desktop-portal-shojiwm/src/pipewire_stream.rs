@@ -87,8 +87,8 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -99,9 +99,7 @@ use pw::spa::pod::{ChoiceValue, Object, Pod, Property, Value};
 use pw::spa::support::system::IoFlags;
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 use spa::sys as spa_sys;
-use wayland_client::protocol::{
-    wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool,
-};
+use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -151,7 +149,13 @@ pub fn start(
         .map_err(|_| "screencast thread died before reporting node id".to_string())?
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
     tracing::info!(node_id, "screencast stream live");
-    Ok((node_id, StreamHandle { stop, join: Some(join) }))
+    Ok((
+        node_id,
+        StreamHandle {
+            stop,
+            join: Some(join),
+        },
+    ))
 }
 
 // ─── Shared state ────────────────────────────────────────────────────────
@@ -268,10 +272,11 @@ fn run(
     event_queue.roundtrip(&mut state)?;
 
     if state.manager.is_none() {
-        let _ = state
-            .node_id_tx
-            .take()
-            .map(|tx| tx.send(Err("compositor doesn't expose zwlr_screencopy_manager_v1".into())));
+        let _ = state.node_id_tx.take().map(|tx| {
+            tx.send(Err(
+                "compositor doesn't expose zwlr_screencopy_manager_v1".into()
+            ))
+        });
         return Err("no zwlr_screencopy_manager_v1".into());
     }
     if state.shm.is_none() {
@@ -282,12 +287,10 @@ fn run(
         return Err("no wl_shm".into());
     }
     if state.target_output.is_none() {
-        let _ = state.node_id_tx.take().map(|tx| {
-            tx.send(Err(format!(
-                "output {:?} not found",
-                spec.output_name
-            )))
-        });
+        let _ = state
+            .node_id_tx
+            .take()
+            .map(|tx| tx.send(Err(format!("output {:?} not found", spec.output_name))));
         return Err("target output not found".into());
     }
     tracing::info!(output = spec.output_name, "screencast: globals bound");
@@ -314,9 +317,7 @@ fn run(
     let _listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |stream, _ud, old, new| {
-            s_state
-                .borrow_mut()
-                .on_state_changed(stream, old, new);
+            s_state.borrow_mut().on_state_changed(stream, old, new);
         })
         .add_buffer(move |stream, _ud, buffer| {
             s_add.borrow_mut().on_add_buffer(stream, buffer);
@@ -334,10 +335,9 @@ fn run(
     // Negotiate format + buffer params.
     let format_bytes = build_video_format_param(&spec)?;
     let buffers_bytes = build_buffers_param(&spec)?;
-    let format_pod =
-        Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
-    let buffers_pod = Pod::from_bytes(&buffers_bytes)
-        .ok_or("buffers POD parse failed".to_string())?;
+    let format_pod = Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
+    let buffers_pod =
+        Pod::from_bytes(&buffers_bytes).ok_or("buffers POD parse failed".to_string())?;
     let mut params = [format_pod, buffers_pod];
     stream.connect(
         spa::utils::Direction::Output,
@@ -423,12 +423,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         match interface.as_str() {
             "wl_output" => {
                 // Bind eagerly; filter by name when we get the Name event.
-                let _output = registry.bind::<wl_output::WlOutput, _, _>(
-                    name,
-                    version.min(4),
-                    qh,
-                    (),
-                );
+                let _output =
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
             }
             "wl_shm" => {
                 state.shm =
@@ -597,16 +593,15 @@ impl AppState {
         let size = stride as usize * self.spec.height as usize;
 
         // Allocate a memfd for this slot.
-        let memfd = match rustix::fs::memfd_create(
-            "shojiwm-portal-pwbuf",
-            rustix::fs::MemfdFlags::CLOEXEC,
-        ) {
-            Ok(fd) => fd,
-            Err(e) => {
-                tracing::error!("memfd_create: {e}");
-                return;
-            }
-        };
+        let memfd =
+            match rustix::fs::memfd_create("shojiwm-portal-pwbuf", rustix::fs::MemfdFlags::CLOEXEC)
+            {
+                Ok(fd) => fd,
+                Err(e) => {
+                    tracing::error!("memfd_create: {e}");
+                    return;
+                }
+            };
         if let Err(e) = rustix::fs::ftruncate(&memfd, size as u64) {
             tracing::error!("ftruncate: {e}");
             return;
@@ -676,11 +671,7 @@ impl AppState {
         );
     }
 
-    fn on_remove_buffer(
-        &mut self,
-        _stream: &pw::stream::Stream,
-        buffer: *mut pw::sys::pw_buffer,
-    ) {
+    fn on_remove_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
         let key = buffer as usize;
         if let Some(slot) = self.pw_buffer_slots.remove(&key) {
             slot.wl_buffer.destroy();
@@ -793,8 +784,7 @@ impl AppState {
                         (*(*pw_buf).buffer).n_datas as usize,
                     );
                     let data = &mut datas[0];
-                    let stride =
-                        *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
+                    let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
                     let chunk = &mut *data.chunk;
                     chunk.offset = 0;
                     chunk.stride = stride;
@@ -806,10 +796,7 @@ impl AppState {
 
         self.frames_completed += 1;
         if self.last_log_at.elapsed() >= std::time::Duration::from_secs(2) {
-            tracing::info!(
-                frames = self.frames_completed,
-                "screencast: frames queued"
-            );
+            tracing::info!(frames = self.frames_completed, "screencast: frames queued");
             self.last_log_at = std::time::Instant::now();
         }
 

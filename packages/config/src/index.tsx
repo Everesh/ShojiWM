@@ -246,14 +246,14 @@ WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
         <WindowBorder
             style={{
                 border: { px: 2, color: borderColor },
-                borderRadius: 0,
+                borderRadius: 10,
                 background: "#10131900",
                 padding: 0,
                 paddingX: 0,
                 paddingRight: 0,
             }}
         >
-            <Box direction="row" style={{ border: { px: 2, color: "#000000" }, borderRadius: 20, overflow: 'hidden', }}>
+            <Box direction="row">
                 <Box direction="column">
                     <ShaderEffect shader={backgroundShader} direction="row" style={titlebarStyle}>
                         <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />

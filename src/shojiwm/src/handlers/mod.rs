@@ -141,7 +141,9 @@ impl ToplevelCaptureSourceHandler for ShojiWM {
         source: ImageCaptureSource,
         toplevel: ForeignToplevelHandle,
     ) {
-        source.user_data().insert_if_missing(|| toplevel.downgrade());
+        source
+            .user_data()
+            .insert_if_missing(|| toplevel.downgrade());
     }
 }
 
@@ -157,9 +159,7 @@ impl ImageCopyCaptureHandler for ShojiWM {
         let size = resolve_source_size(self, source)?;
         Some(BufferConstraints {
             size,
-            shm: vec![
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888,
-            ],
+            shm: vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb8888],
             dma: None,
         })
     }
@@ -189,8 +189,8 @@ impl ImageCopyCaptureHandler for ShojiWM {
         }
         if let Some(weak) = source
             .user_data()
-            .get::<smithay::wayland::foreign_toplevel_list::ForeignToplevelWeakHandle>()
-        {
+            .get::<smithay::wayland::foreign_toplevel_list::ForeignToplevelWeakHandle>(
+        ) {
             self.image_copy_capture_pending.push(PendingCapture {
                 frame,
                 target: CaptureTarget::Toplevel(weak.clone()),

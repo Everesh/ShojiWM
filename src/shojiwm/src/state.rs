@@ -196,8 +196,7 @@ pub struct ShojiWM {
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
-    pub image_capture_source_state:
-        smithay::wayland::image_capture_source::ImageCaptureSourceState,
+    pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
         smithay::wayland::image_capture_source::OutputCaptureSourceState,
     pub toplevel_capture_source_state:

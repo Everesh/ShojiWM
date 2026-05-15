@@ -15,9 +15,8 @@ use crate::{
     backend::visual::{
         RectSnapMode, relative_physical_rect_from_root, relative_physical_rect_from_root_precise,
         relative_physical_rect_from_root_snapped_edges, snapped_logical_radius,
-        snapped_logical_rect_for_element,
-        snapped_logical_rect_from_relative_physical, snapped_precise_logical_rect_in_area_space,
-        snapped_precise_logical_rect_in_element_space,
+        snapped_logical_rect_for_element, snapped_logical_rect_from_relative_physical,
+        snapped_precise_logical_rect_in_area_space, snapped_precise_logical_rect_in_element_space,
     },
     ssd::{ComputedDecorationNode, LogicalRect, StylePosition, WindowDecorationState},
 };
@@ -1051,39 +1050,32 @@ fn rounded_rect_element(
     } else {
         cached
             .clip_rect_precise
-            .map(|clip_rect| {
-                RoundedClip {
+            .map(|clip_rect| RoundedClip {
+                rect: snapped_precise_logical_rect_in_area_space(
+                    clip_rect,
+                    outer_rect_precise,
+                    local_rect.size.w,
+                    local_rect.size.h,
+                    Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
+                    scale,
+                ),
+                radius: snapped_radius_f32(
+                    cached
+                        .clip_radius_precise
+                        .unwrap_or(cached.clip_radius as f32),
+                ),
+            })
+            .or_else(|| {
+                cached.clip_rect.map(|clip_rect| RoundedClip {
                     rect: snapped_precise_logical_rect_in_area_space(
-                        clip_rect,
+                        crate::backend::visual::precise_rect_from_logical(clip_rect),
                         outer_rect_precise,
                         local_rect.size.w,
                         local_rect.size.h,
                         Point::from((decoration.layout.root.rect.x, decoration.layout.root.rect.y)),
                         scale,
                     ),
-                    radius: snapped_radius_f32(
-                        cached
-                            .clip_radius_precise
-                            .unwrap_or(cached.clip_radius as f32),
-                    ),
-                }
-            })
-            .or_else(|| {
-                cached.clip_rect.map(|clip_rect| {
-                    RoundedClip {
-                        rect: snapped_precise_logical_rect_in_area_space(
-                            crate::backend::visual::precise_rect_from_logical(clip_rect),
-                            outer_rect_precise,
-                            local_rect.size.w,
-                            local_rect.size.h,
-                            Point::from((
-                                decoration.layout.root.rect.x,
-                                decoration.layout.root.rect.y,
-                            )),
-                            scale,
-                        ),
-                        radius: snapped_logical_radius(cached.clip_radius, scale),
-                    }
+                    radius: snapped_logical_radius(cached.clip_radius, scale),
                 })
             })
     };

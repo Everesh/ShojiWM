@@ -288,10 +288,7 @@ impl ScreenCast {
                     .insert(session_key, AnyStreamHandle::Toplevel(handle_owned));
 
                 let mut stream_props: HashMap<String, Value> = HashMap::new();
-                stream_props.insert(
-                    "source_type".to_string(),
-                    Value::from(source_types::WINDOW),
-                );
+                stream_props.insert("source_type".to_string(), Value::from(source_types::WINDOW));
                 let streams: Vec<(u32, HashMap<String, Value>)> = vec![(node_id, stream_props)];
                 let mut results = HashMap::new();
                 results.insert(

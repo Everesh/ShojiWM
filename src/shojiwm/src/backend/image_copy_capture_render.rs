@@ -71,9 +71,7 @@ pub fn process_image_copy_capture_for_output(
         }
         let entry = pending.remove(i);
         let PendingCapture {
-            frame,
-            draw_cursor,
-            ..
+            frame, draw_cursor, ..
         } = entry;
         // Compose cursor only when the session asked for it (paint_cursors).
         // Reference slices to avoid cloning non-Clone TtyRenderElements.
@@ -197,9 +195,7 @@ fn render_frame_for_output(
     elements: &[&TtyRenderElements],
     frame: &Frame,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mode = output
-        .current_mode()
-        .ok_or("output has no current mode")?;
+    let mode = output.current_mode().ok_or("output has no current mode")?;
     let transform = output.current_transform();
     let size = transform.transform_size(mode.size);
     let scale: Scale<f64> = output.current_scale().fractional_scale().into();

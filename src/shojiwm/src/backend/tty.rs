@@ -4619,10 +4619,7 @@ fn log_gap_readback_probe(
         (0, 0),
         (probe_rect.size.w / 2, probe_rect.size.h / 2),
         (probe_rect.size.w.saturating_sub(1), 0),
-        (
-            probe_rect.size.w.saturating_sub(1),
-            probe_rect.size.h / 2,
-        ),
+        (probe_rect.size.w.saturating_sub(1), probe_rect.size.h / 2),
         (
             probe_rect.size.w.saturating_sub(1),
             probe_rect.size.h.saturating_sub(1),
@@ -4670,12 +4667,12 @@ fn transform_physical_rect_for_visual(
         return rect;
     }
 
-    let left =
-        visual.origin.x as f64 + (rect.loc.x - visual.origin.x) as f64 * visual.scale.x
-            + visual.translation.x as f64;
-    let top =
-        visual.origin.y as f64 + (rect.loc.y - visual.origin.y) as f64 * visual.scale.y
-            + visual.translation.y as f64;
+    let left = visual.origin.x as f64
+        + (rect.loc.x - visual.origin.x) as f64 * visual.scale.x
+        + visual.translation.x as f64;
+    let top = visual.origin.y as f64
+        + (rect.loc.y - visual.origin.y) as f64 * visual.scale.y
+        + visual.translation.y as f64;
     let right = visual.origin.x as f64
         + (rect.loc.x + rect.size.w - visual.origin.x) as f64 * visual.scale.x
         + visual.translation.x as f64;
@@ -4716,7 +4713,8 @@ fn log_gap_final_composite_readback(
     }
 
     let root_rect = decoration.layout.root.rect;
-    let root_origin = crate::backend::visual::root_physical_origin(root_rect, output_geo, output_scale);
+    let root_origin =
+        crate::backend::visual::root_physical_origin(root_rect, output_geo, output_scale);
     let titlebar_shader = decoration
         .shader_buffers
         .iter()
@@ -4744,27 +4742,27 @@ fn log_gap_final_composite_readback(
                 output_scale,
             )
         });
-    let titlebar_geometry =
-        transform_physical_rect_for_visual(translate_physical_rect(titlebar_pre, root_origin), visual);
+    let titlebar_geometry = transform_physical_rect_for_visual(
+        translate_physical_rect(titlebar_pre, root_origin),
+        visual,
+    );
 
     let parent_box_border = decoration.buffers.iter().find(|buffer| {
         buffer.source_kind == "box"
             && buffer.border_width > 0.0
-            && buffer
-                .hole_rect_precise
-                .is_some_and(|hole| {
-                    let shader = titlebar_shader.rect_precise.unwrap_or_else(|| {
-                        crate::backend::visual::PreciseLogicalRect {
-                            x: titlebar_shader.rect.x as f32,
-                            y: titlebar_shader.rect.y as f32,
-                            width: titlebar_shader.rect.width as f32,
-                            height: titlebar_shader.rect.height as f32,
-                        }
-                    });
-                    shader.x >= hole.x - 1.0
-                        && shader.y >= hole.y - 1.0
-                        && shader.x + shader.width <= hole.x + hole.width + 1.0
-                })
+            && buffer.hole_rect_precise.is_some_and(|hole| {
+                let shader = titlebar_shader.rect_precise.unwrap_or_else(|| {
+                    crate::backend::visual::PreciseLogicalRect {
+                        x: titlebar_shader.rect.x as f32,
+                        y: titlebar_shader.rect.y as f32,
+                        width: titlebar_shader.rect.width as f32,
+                        height: titlebar_shader.rect.height as f32,
+                    }
+                });
+                shader.x >= hole.x - 1.0
+                    && shader.y >= hole.y - 1.0
+                    && shader.x + shader.width <= hole.x + hole.width + 1.0
+            })
     });
 
     let parent_hole_geometry = parent_box_border.and_then(|buffer| {
@@ -4846,7 +4844,10 @@ fn log_gap_final_composite_readback(
             probes.push((
                 format!("parent-hole-right-offset-{offset}px"),
                 smithay::utils::Rectangle::new(
-                    smithay::utils::Point::from((hole.loc.x + hole.size.w + offset, titlebar_geometry.loc.y)),
+                    smithay::utils::Point::from((
+                        hole.loc.x + hole.size.w + offset,
+                        titlebar_geometry.loc.y,
+                    )),
                     smithay::utils::Size::from((1, titlebar_geometry.size.h)),
                 ),
             ));

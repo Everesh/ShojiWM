@@ -182,7 +182,11 @@ fn render_for_screencopy<'a>(
         .map(|element| {
             // `element` is `&&TtyRenderElements`; deref once so the wrapped
             // type stays `&TtyRenderElements`.
-            RelocateRenderElement::from_element(*element, region_loc.upscale(-1), Relocate::Relative)
+            RelocateRenderElement::from_element(
+                *element,
+                region_loc.upscale(-1),
+                Relocate::Relative,
+            )
         })
         .collect::<Vec<_>>();
 

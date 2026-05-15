@@ -87,5 +87,3 @@ impl ShojiWM {
         let _ = window;
     }
 }
-
-

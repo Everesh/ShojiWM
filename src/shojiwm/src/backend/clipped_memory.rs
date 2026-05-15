@@ -7,10 +7,10 @@ use smithay::{
         gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName},
         utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
-    utils::{Buffer, Physical, Rectangle, Scale, Transform},
+    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
 };
 
-use crate::backend::visual::PreciseLogicalRect;
+use crate::backend::visual::{PreciseLogicalRect, snapped_precise_logical_rect_in_area_space};
 use crate::ssd::LogicalRect;
 
 #[derive(Debug)]
@@ -20,8 +20,6 @@ pub struct ClippedMemoryElement {
     clip_rect: PreciseLogicalRect,
     clip_radius: f32,
     scale: f32,
-    clip_scale_x: f32,
-    clip_scale_y: f32,
 }
 
 #[derive(Debug)]
@@ -83,16 +81,8 @@ impl ClippedMemoryElement {
             .expect("clipped memory shader should be cached");
 
         let src = inner.src();
-        let clip_scale_x = if element_rect.width > 0 {
-            src.size.w as f32 / element_rect.width as f32
-        } else {
-            1.0
-        };
-        let clip_scale_y = if element_rect.height > 0 {
-            src.size.h as f32 / element_rect.height as f32
-        } else {
-            1.0
-        };
+        let area_width = (src.size.w.round().max(1.0)) as i32;
+        let area_height = (src.size.h.round().max(1.0)) as i32;
         let element_rect_precise = element_rect_precise.unwrap_or(PreciseLogicalRect {
             x: element_rect.x as f32,
             y: element_rect.y as f32,
@@ -105,20 +95,29 @@ impl ClippedMemoryElement {
             width: clip_rect.width as f32,
             height: clip_rect.height as f32,
         });
+        let clip_rect = snapped_precise_logical_rect_in_area_space(
+            clip_rect_precise,
+            element_rect_precise,
+            area_width,
+            area_height,
+            Point::<i32, Logical>::from((0, 0)),
+            scale,
+        );
+        let radius_scale_x = area_width as f32 / element_rect_precise.width.max(0.0001);
+        let radius_scale_y = area_height as f32 / element_rect_precise.height.max(0.0001);
+        let radius_scale = radius_scale_x.min(radius_scale_y).max(0.0);
 
         Ok(Self {
             inner,
             program: program.0.clone(),
             clip_rect: PreciseLogicalRect {
-                x: clip_rect_precise.x - element_rect_precise.x,
-                y: clip_rect_precise.y - element_rect_precise.y,
-                width: clip_rect_precise.width,
-                height: clip_rect_precise.height,
+                x: clip_rect.x,
+                y: clip_rect.y,
+                width: clip_rect.width,
+                height: clip_rect.height,
             },
-            clip_radius: clip_radius_precise.unwrap_or(clip_radius as f32).max(0.0),
-            scale: clip_scale_x.max(clip_scale_y).max(scale.x as f32),
-            clip_scale_x,
-            clip_scale_y,
+            clip_radius: clip_radius_precise.unwrap_or(clip_radius as f32).max(0.0) * radius_scale,
+            scale: 1.0,
         })
     }
 
@@ -135,21 +134,13 @@ impl ClippedMemoryElement {
             Uniform::new(
                 "clip_rect",
                 [
-                    self.clip_rect.x * self.clip_scale_x,
-                    self.clip_rect.y * self.clip_scale_y,
-                    self.clip_rect.width * self.clip_scale_x,
-                    self.clip_rect.height * self.clip_scale_y,
+                    self.clip_rect.x,
+                    self.clip_rect.y,
+                    self.clip_rect.width,
+                    self.clip_rect.height,
                 ],
             ),
-            Uniform::new(
-                "clip_radius",
-                [
-                    radius * self.clip_scale_x.min(self.clip_scale_y),
-                    radius * self.clip_scale_x.min(self.clip_scale_y),
-                    radius * self.clip_scale_x.min(self.clip_scale_y),
-                    radius * self.clip_scale_x.min(self.clip_scale_y),
-                ],
-            ),
+            Uniform::new("clip_radius", [radius, radius, radius, radius]),
         ]
     }
 }

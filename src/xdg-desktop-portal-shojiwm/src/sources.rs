@@ -383,10 +383,8 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppData {
             ext_image_copy_capture_session_v1::Event::ShmFormat { format } => {
                 if let WEnum::Value(f) = format {
                     // Prefer Xrgb8888 / Argb8888 over more exotic ones.
-                    let is_preferred = matches!(
-                        f,
-                        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888
-                    );
+                    let is_preferred =
+                        matches!(f, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888);
                     if c.constraint_format.is_none() || is_preferred {
                         c.constraint_format = Some(f);
                     }
@@ -562,11 +560,9 @@ fn allocate_shm_buffer(
 )> {
     let shm = app.state.lock().unwrap().shm.clone()?;
     let size = stride as usize * height as usize;
-    let memfd = rustix::fs::memfd_create(
-        "shojiwm-portal-thumbnail",
-        rustix::fs::MemfdFlags::CLOEXEC,
-    )
-    .ok()?;
+    let memfd =
+        rustix::fs::memfd_create("shojiwm-portal-thumbnail", rustix::fs::MemfdFlags::CLOEXEC)
+            .ok()?;
     rustix::fs::ftruncate(&memfd, size as u64).ok()?;
     let ptr = unsafe {
         rustix::mm::mmap(
@@ -652,8 +648,7 @@ pub struct ThumbnailStream {
 
 impl Drop for ThumbnailStream {
     fn drop(&mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -818,4 +813,3 @@ fn run_stream(
     }
     Ok(())
 }
-

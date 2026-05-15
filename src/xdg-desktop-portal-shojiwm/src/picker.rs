@@ -195,12 +195,14 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
     };
 
     // Counts per tab, used to label and empty-state.
-    let (n_outputs, n_windows) = active.sources.iter().fold((0usize, 0usize), |acc, s| {
-        match s.kind {
-            SourceKind::Output(_) => (acc.0 + 1, acc.1),
-            SourceKind::Toplevel(_) => (acc.0, acc.1 + 1),
-        }
-    });
+    let (n_outputs, n_windows) =
+        active
+            .sources
+            .iter()
+            .fold((0usize, 0usize), |acc, s| match s.kind {
+                SourceKind::Output(_) => (acc.0 + 1, acc.1),
+                SourceKind::Toplevel(_) => (acc.0, acc.1 + 1),
+            });
 
     let tabs = row![
         tab_button(
@@ -272,17 +274,9 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
         button(text("キャンセル")).on_press(Message::Cancelled),
     ];
 
-    container(
-        column![
-            text("画面共有の対象を選択").size(18),
-            tabs,
-            body,
-            footer,
-        ]
-        .spacing(12),
-    )
-    .padding(16)
-    .into()
+    container(column![text("画面共有の対象を選択").size(18), tabs, body, footer,].spacing(12))
+        .padding(16)
+        .into()
 }
 
 fn tab_button(label: String, selected: bool, kind: Tab) -> Element<'static, Message> {
