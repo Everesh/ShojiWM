@@ -1,0 +1,16 @@
+# 日本語 (ja_JP) — keys mirror i18n/en_US.toml.
+
+[picker]
+window_title = "ShojiWM — ソースを選択"
+heading = "画面共有の対象を選択"
+idle = "待機中"
+tab_fullscreen = "全画面 ({count})"
+tab_window = "ウィンドウ ({count})"
+no_outputs = "利用可能な出力がありません。"
+no_windows = "利用可能なウィンドウがありません。"
+no_sources = "キャプチャ可能なソースが見つかりません。"
+cancel = "キャンセル"
+
+[source]
+window = "ウィンドウ"
+window_with_id = "ウィンドウ — {id}"

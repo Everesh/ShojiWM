@@ -1,0 +1,17 @@
+# English (US) — also the fallback when the current locale isn't available.
+# Keep keys in sync with i18n/ja_JP.toml and any future locale TOMLs.
+
+[picker]
+window_title = "ShojiWM — Pick a source"
+heading = "Choose a screen share target"
+idle = "Idle."
+tab_fullscreen = "Full screen ({count})"
+tab_window = "Window ({count})"
+no_outputs = "No outputs available."
+no_windows = "No windows available."
+no_sources = "No capturable sources found."
+cancel = "Cancel"
+
+[source]
+window = "Window"
+window_with_id = "Window — {id}"

@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::i18n;
 use crate::sources::{SourceInfo, SourceKind, ThumbnailUpdate};
 
 #[derive(Debug, Clone)]
@@ -66,7 +67,7 @@ pub fn setup() -> (PickerHandle, mpsc::UnboundedSender<ThumbnailUpdate>) {
 
 pub fn run_on_main_thread() -> iced::Result {
     iced::daemon(|| (State::default(), Task::none()), update, view)
-        .title(|_state: &State, _id: window::Id| "ShojiWM — Pick a source".to_string())
+        .title(|_state: &State, _id: window::Id| i18n::t("picker.window_title"))
         .subscription(subscription)
         .run()
 }
@@ -191,7 +192,7 @@ where
 
 fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
     let Some(active) = state.active.as_ref() else {
-        return container(text("Idle.")).padding(16).into();
+        return container(text(i18n::t("picker.idle"))).padding(16).into();
     };
 
     // Counts per tab, used to label and empty-state.
@@ -206,17 +207,31 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
 
     let tabs = row![
         tab_button(
-            format!("全画面 ({n_outputs})"),
+            i18n::t_args(
+                "picker.tab_fullscreen",
+                &[("count", &n_outputs.to_string())]
+            ),
             active.tab == Tab::FullScreen,
             Tab::FullScreen
         ),
         tab_button(
-            format!("ウィンドウ ({n_windows})"),
+            i18n::t_args("picker.tab_window", &[("count", &n_windows.to_string())]),
             active.tab == Tab::Window,
             Tab::Window
         ),
     ]
     .spacing(8);
+
+    if active.sources.is_empty() {
+        let no_sources = container(text(i18n::t("picker.no_sources")))
+            .padding(16);
+        return container(
+            column![text(i18n::t("picker.heading")).size(18), tabs, no_sources]
+                .spacing(12),
+        )
+        .padding(16)
+        .into();
+    }
 
     let mut list = column![].spacing(6);
     let mut shown_any = false;
@@ -260,23 +275,25 @@ fn view(state: &State, _id: window::Id) -> Element<'_, Message> {
         );
     }
     if !shown_any {
-        let message = match active.tab {
-            Tab::FullScreen => "出力が見つかりません。",
-            Tab::Window => "ウィンドウが見つかりません。",
+        let key = match active.tab {
+            Tab::FullScreen => "picker.no_outputs",
+            Tab::Window => "picker.no_windows",
         };
-        list = list.push(text(message));
+        list = list.push(text(i18n::t(key)));
     }
 
     let body = scrollable(list).height(Length::Fill);
 
     let footer = row![
         space::horizontal(),
-        button(text("キャンセル")).on_press(Message::Cancelled),
+        button(text(i18n::t("picker.cancel"))).on_press(Message::Cancelled),
     ];
 
-    container(column![text("画面共有の対象を選択").size(18), tabs, body, footer,].spacing(12))
-        .padding(16)
-        .into()
+    container(
+        column![text(i18n::t("picker.heading")).size(18), tabs, body, footer,].spacing(12),
+    )
+    .padding(16)
+    .into()
 }
 
 fn tab_button(label: String, selected: bool, kind: Tab) -> Element<'static, Message> {

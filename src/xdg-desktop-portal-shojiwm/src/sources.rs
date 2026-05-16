@@ -110,9 +110,10 @@ impl SourceInfo {
             ),
             SourceKind::Toplevel(t) => {
                 if t.identifier.is_empty() {
-                    "Window".to_string()
+                    crate::i18n::t("source.window")
                 } else {
-                    format!("Window — {}", &t.identifier[..t.identifier.len().min(12)])
+                    let short = &t.identifier[..t.identifier.len().min(12)];
+                    crate::i18n::t_args("source.window_with_id", &[("id", short)])
                 }
             }
         }

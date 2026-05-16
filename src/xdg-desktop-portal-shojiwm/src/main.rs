@@ -1,3 +1,4 @@
+mod i18n;
 mod picker;
 mod pipewire_stream;
 mod screencast;
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     tracing::info!("xdg-desktop-portal-shojiwm starting");
+    i18n::init();
 
     // Build a multi-thread tokio runtime that lives on a dedicated worker
     // thread. The main thread is reserved for eframe/winit because winit
