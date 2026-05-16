@@ -58,8 +58,7 @@ Once installed, `xdg-desktop-portal` will D-Bus activate the binary on demand.
 `.portal` files and `portals.conf` overrides.
 
 The `.portal` file ships with `UseIn=ShojiWM`, which matches when
-`XDG_CURRENT_DESKTOP=ShojiWM` (or contains `ShojiWM` as a component, e.g.
-`ShojiWM:sway`).
+`XDG_CURRENT_DESKTOP=ShojiWM` (or contains `ShojiWM` as a component).
 
 To pin ScreenCast to shojiwm regardless of what else is installed, drop a file
 at `~/.config/xdg-desktop-portal/shojiwm-portals.conf` (filename must be

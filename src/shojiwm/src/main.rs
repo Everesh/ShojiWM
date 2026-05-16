@@ -114,12 +114,7 @@ fn sanitize_inherited_compositor_environment() {
     }
 
     unsafe {
-        // Include `sway` as a secondary identifier so portal backends that gate on
-        // XDG_CURRENT_DESKTOP via their .portal file's `UseIn` whitelist (notably
-        // xdg-desktop-portal-wlr) accept this session. Strict portal matching was
-        // introduced in xdg-desktop-portal 1.18+, and unknown desktop names are
-        // refused even when explicitly requested in <desktop>-portals.conf.
-        std::env::set_var("XDG_CURRENT_DESKTOP", "ShojiWM:sway");
+        std::env::set_var("XDG_CURRENT_DESKTOP", "ShojiWM");
         std::env::set_var("XDG_SESSION_DESKTOP", "ShojiWM");
     }
 }

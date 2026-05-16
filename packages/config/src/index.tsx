@@ -38,7 +38,7 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
         };
     }
 });*/
-
+/*
 WINDOW_MANAGER.process.once("xdg-portal-env", {
     command:
         "export XDG_SESSION_TYPE=wayland && " +
@@ -47,7 +47,7 @@ WINDOW_MANAGER.process.once("xdg-portal-env", {
         "systemctl --user reset-failed xdg-desktop-portal xdg-desktop-portal-wlr 2>/dev/null; " +
         "systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr",
     runPolicy: "once-per-session",
-});
+});*/
 // Workaround for the xdg-desktop-portal-wlr (xdpw) 30 fps cap.
 //
 // xdpw commit ca7a3e2e dropped PW_STREAM_FLAG_DRIVER, which makes its
