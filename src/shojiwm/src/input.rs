@@ -202,7 +202,9 @@ impl ShojiWM {
                 pointer.frame(self);
 
                 self.update_decoration_hover_target(pos);
-                self.update_decoration_cursor_icon(pos);
+                if !pointer.is_grabbed() {
+                    self.update_decoration_cursor_icon(pos);
+                }
                 self.schedule_redraw();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -231,7 +233,9 @@ impl ShojiWM {
                 );
                 pointer.frame(self);
                 self.update_decoration_hover_target(pos);
-                self.update_decoration_cursor_icon(pos);
+                if !pointer.is_grabbed() {
+                    self.update_decoration_cursor_icon(pos);
+                }
                 self.schedule_redraw();
             }
             InputEvent::PointerButton { event, .. } => {
@@ -1003,7 +1007,7 @@ impl ShojiWM {
         invoked
     }
 
-    fn update_decoration_cursor_icon(
+    pub(crate) fn update_decoration_cursor_icon(
         &mut self,
         pos: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {

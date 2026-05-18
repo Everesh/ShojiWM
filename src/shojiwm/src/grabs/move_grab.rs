@@ -13,10 +13,11 @@ use crate::{
 use smithay::{
     desktop::Window,
     input::pointer::{
-        AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
-        GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
-        MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+        AxisFrame, ButtonEvent, CursorIcon, GestureHoldBeginEvent, GestureHoldEndEvent,
+        GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
+        GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+        GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+        RelativeMotionEvent,
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point},
@@ -53,6 +54,8 @@ impl MoveSurfaceGrab {
     }
 
     pub fn notify_start(&mut self, data: &mut ShojiWM) {
+        data.cursor_override = Some(CursorIcon::Grabbing);
+        data.schedule_redraw();
         self.runtime_managed = self.invoke_runtime_event(
             data,
             WindowMovePhaseSnapshot::Start,
@@ -232,6 +235,7 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
             if self.runtime_managed {
                 self.invoke_runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
             }
+            data.update_decoration_cursor_icon(self.last_pointer);
         }
     }
 
@@ -324,7 +328,9 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut ShojiWM) {}
+    fn unset(&mut self, data: &mut ShojiWM) {
+        data.update_decoration_cursor_icon(self.last_pointer);
+    }
 }
 
 fn move_rect_for_delta(
