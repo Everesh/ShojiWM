@@ -1,5 +1,6 @@
 import { signal, type Signal } from "./signals";
 import { createWindowAnimationController, type WindowAnimationController } from "./animation";
+import { createWindowStateStore } from "./window-state";
 import type {
   DecorationInteractionSnapshot,
   MaybeSignal,
@@ -73,6 +74,7 @@ export function createReactiveWindow(
   let transformScaleY: MaybeSignal<number> = 1;
   let transformOpacity: MaybeSignal<number> = 1;
   let managedRect: WindowPosition | undefined;
+  let window: ReactiveWaylandWindow;
 
   const position = {
     get x() {
@@ -128,7 +130,9 @@ export function createReactiveWindow(
     },
   };
 
-  const window: ReactiveWaylandWindow = {
+  const state = createWindowStateStore(() => window);
+
+  window = {
     get id() {
       return signals.id.value;
     },
@@ -140,6 +144,7 @@ export function createReactiveWindow(
     get rect() {
       return managedRect;
     },
+    state,
     isFocused: signals.isFocused,
     isFloating: signals.isFloating,
     isMaximized: signals.isMaximized,

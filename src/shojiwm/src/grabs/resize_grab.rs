@@ -3,6 +3,10 @@
 //! eg. Usually whenever a user clicks on the app's border and starts dragging, the compositors
 //! enters a ResizeSurfaceGrab state.
 
+use crate::ssd::{
+    WindowPositionSnapshot, WindowResizeEdgesSnapshot, WindowResizeEventSnapshot,
+    WindowResizePhaseSnapshot, WindowResizePointSnapshot, WindowResizeSourceSnapshot,
+};
 use crate::state::ShojiWM;
 use smithay::{
     desktop::{Space, Window},
@@ -49,8 +53,12 @@ pub struct ResizeSurfaceGrab {
     window: Window,
 
     edges: ResizeEdge,
+    source: WindowResizeSourceSnapshot,
+    runtime_managed: bool,
 
     initial_rect: Rectangle<i32, Logical>,
+    initial_event_rect: Rectangle<i32, Logical>,
+    last_pointer: Point<f64, Logical>,
     last_window_size: Size<i32, Logical>,
 }
 
@@ -60,9 +68,12 @@ impl ResizeSurfaceGrab {
         window: Window,
         edges: ResizeEdge,
         initial_window_rect: Rectangle<i32, Logical>,
+        initial_event_rect: Rectangle<i32, Logical>,
+        source: WindowResizeSourceSnapshot,
     ) -> Option<Self> {
         let toplevel = window.toplevel()?;
         let initial_rect = initial_window_rect;
+        let last_pointer = start_data.location;
 
         ResizeSurfaceState::with(toplevel.wl_surface(), |state| {
             *state = ResizeSurfaceState::Resizing {
@@ -75,9 +86,66 @@ impl ResizeSurfaceGrab {
             start_data,
             window,
             edges,
+            source,
+            runtime_managed: false,
             initial_rect,
+            initial_event_rect,
+            last_pointer,
             last_window_size: initial_rect.size,
         })
+    }
+
+    pub fn notify_start(&mut self, data: &mut ShojiWM) {
+        self.runtime_managed = self.invoke_runtime_event(
+            data,
+            WindowResizePhaseSnapshot::Start,
+            self.start_data.location,
+        );
+    }
+
+    fn invoke_runtime_event(
+        &self,
+        data: &mut ShojiWM,
+        phase: WindowResizePhaseSnapshot,
+        current_pointer: Point<f64, Logical>,
+    ) -> bool {
+        let window_id = data.snapshot_window(&self.window).id;
+        let event = self.runtime_event(data, phase, current_pointer);
+        let now_ms = std::time::Duration::from(data.clock.now()).as_millis() as u64;
+        data.invoke_window_resize_event(&window_id, &event, now_ms)
+    }
+
+    fn runtime_event(
+        &self,
+        data: &ShojiWM,
+        phase: WindowResizePhaseSnapshot,
+        current_pointer: Point<f64, Logical>,
+    ) -> WindowResizeEventSnapshot {
+        let start_pointer = self.start_data.location;
+        let delta = current_pointer - start_pointer;
+        let current_rect = resize_rect_for_delta(self.initial_event_rect, self.edges, delta);
+        let output_name = data
+            .space
+            .outputs()
+            .find(|output| {
+                data.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.contains(current_pointer.to_i32_round()))
+            })
+            .map(|output| output.name());
+
+        WindowResizeEventSnapshot {
+            source: self.source,
+            phase,
+            edges: resize_edges_snapshot(self.edges),
+            start_pointer: point_snapshot(start_pointer),
+            current_pointer: point_snapshot(current_pointer),
+            delta: point_snapshot(delta),
+            start_rect: rect_snapshot(self.initial_event_rect),
+            current_rect: rect_snapshot(current_rect),
+            output_name,
+            timestamp: std::time::Duration::from(data.clock.now()).as_millis() as u64,
+        }
     }
 }
 
@@ -91,6 +159,12 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
     ) {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
+        self.last_pointer = event.location;
+
+        if self.runtime_managed {
+            self.invoke_runtime_event(data, WindowResizePhaseSnapshot::Update, event.location);
+            return;
+        }
 
         let mut delta = event.location - self.start_data.location;
 
@@ -177,7 +251,18 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
 
-            if let Some(xdg) = self.window.toplevel() {
+            if self.runtime_managed {
+                self.invoke_runtime_event(data, WindowResizePhaseSnapshot::End, self.last_pointer);
+                if let Some(xdg) = self.window.toplevel() {
+                    xdg.with_pending_state(|state| {
+                        state.states.unset(xdg_toplevel::State::Resizing);
+                    });
+                    xdg.send_pending_configure();
+                    ResizeSurfaceState::with(xdg.wl_surface(), |state| {
+                        *state = ResizeSurfaceState::Idle;
+                    });
+                }
+            } else if let Some(xdg) = self.window.toplevel() {
                 xdg.with_pending_state(|state| {
                     state.states.unset(xdg_toplevel::State::Resizing);
                     state.size = Some(self.last_window_size);
@@ -285,6 +370,60 @@ impl PointerGrab<ShojiWM> for ResizeSurfaceGrab {
     }
 
     fn unset(&mut self, _data: &mut ShojiWM) {}
+}
+
+fn resize_rect_for_delta(
+    initial: Rectangle<i32, Logical>,
+    edges: ResizeEdge,
+    delta: Point<f64, Logical>,
+) -> Rectangle<i32, Logical> {
+    let mut x = initial.loc.x;
+    let mut y = initial.loc.y;
+    let mut width = initial.size.w;
+    let mut height = initial.size.h;
+
+    if edges.intersects(ResizeEdge::LEFT) {
+        let dx = delta.x.round() as i32;
+        x += dx;
+        width -= dx;
+    } else if edges.intersects(ResizeEdge::RIGHT) {
+        width += delta.x.round() as i32;
+    }
+
+    if edges.intersects(ResizeEdge::TOP) {
+        let dy = delta.y.round() as i32;
+        y += dy;
+        height -= dy;
+    } else if edges.intersects(ResizeEdge::BOTTOM) {
+        height += delta.y.round() as i32;
+    }
+
+    Rectangle::new((x, y).into(), (width.max(1), height.max(1)).into())
+}
+
+fn resize_edges_snapshot(edges: ResizeEdge) -> WindowResizeEdgesSnapshot {
+    WindowResizeEdgesSnapshot {
+        left: edges.intersects(ResizeEdge::LEFT),
+        right: edges.intersects(ResizeEdge::RIGHT),
+        top: edges.intersects(ResizeEdge::TOP),
+        bottom: edges.intersects(ResizeEdge::BOTTOM),
+    }
+}
+
+fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
+    WindowResizePointSnapshot {
+        x: point.x.round() as i32,
+        y: point.y.round() as i32,
+    }
+}
+
+fn rect_snapshot(rect: Rectangle<i32, Logical>) -> WindowPositionSnapshot {
+    WindowPositionSnapshot {
+        x: rect.loc.x,
+        y: rect.loc.y,
+        width: rect.size.w,
+        height: rect.size.h,
+    }
 }
 
 /// State of the resize operation.

@@ -26,8 +26,9 @@ pub use bridge::{
 pub use evaluator::{
     DecorationEvaluationError, DecorationEvaluationResult, DecorationEvaluator,
     DecorationHandlerInvocation, DecorationKeyBindingInvocation, DecorationSchedulerTick,
-    LayerEffectEvaluationResult, NodeDecorationEvaluator, RuntimeLayerEffectAssignment,
-    RuntimeWindowAction, StaticDecorationEvaluator, evaluate_dynamic_decoration,
+    DecorationWindowResizeInvocation, LayerEffectEvaluationResult, NodeDecorationEvaluator,
+    RuntimeLayerEffectAssignment, RuntimeWindowAction, StaticDecorationEvaluator,
+    evaluate_dynamic_decoration,
 };
 pub use integration::{
     CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
@@ -37,7 +38,8 @@ pub use window_model::{
     LayerKindSnapshot, LayerPositionSnapshot, ManagedWindowState, OutputModeSnapshot,
     OutputPositionSnapshot, TransformOrigin, WaylandLayerSnapshot, WaylandOutputSnapshot,
     WaylandWindowAction, WaylandWindowSnapshot, WindowIconSnapshot, WindowPositionSnapshot,
-    WindowTransform, layer_runtime_id,
+    WindowResizeEdgesSnapshot, WindowResizeEventSnapshot, WindowResizePhaseSnapshot,
+    WindowResizePointSnapshot, WindowResizeSourceSnapshot, WindowTransform, layer_runtime_id,
 };
 
 /// Top-level decoration tree.

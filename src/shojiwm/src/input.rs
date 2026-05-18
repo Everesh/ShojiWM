@@ -21,7 +21,7 @@ use crate::{
     },
     ssd::{
         DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges,
-        RuntimeWindowAction, WindowAction,
+        RuntimeWindowAction, WindowAction, WindowResizeSourceSnapshot,
     },
     state::{ShojiWM, TrackedDecorationInteractionTarget},
 };
@@ -507,15 +507,22 @@ impl ShojiWM {
                                         toplevel.send_pending_configure();
                                     }
 
-                                    if let Some(grab) = ResizeSurfaceGrab::start(
+                                    let initial_window_rect = smithay::utils::Rectangle::new(
+                                        initial_window_location,
+                                        initial_window_size,
+                                    );
+                                    let initial_event_rect = self
+                                        .managed_resize_initial_rect(&window, initial_window_rect);
+
+                                    if let Some(mut grab) = ResizeSurfaceGrab::start(
                                         start_data,
                                         window,
                                         resize_edges_to_grab(edges),
-                                        smithay::utils::Rectangle::new(
-                                            initial_window_location,
-                                            initial_window_size,
-                                        ),
+                                        initial_window_rect,
+                                        initial_event_rect,
+                                        WindowResizeSourceSnapshot::Ssd,
                                     ) {
+                                        grab.notify_start(self);
                                         pointer.set_grab(
                                             self,
                                             grab,

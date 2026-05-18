@@ -30,6 +30,7 @@ import {
   createManagedPoll,
   dropLayerDependencies,
   dropWindowDependencies,
+  dropWindowState,
   enterLayerDependencyScope,
   isSignal,
   installAssetResolverBridge,
@@ -54,6 +55,7 @@ import {
   type PollCallback,
   type PollDirtyMode,
   type PollHandle,
+  type RuntimeWindowResizeEvent,
   updateOutputState,
   type WaylandLayerSnapshot,
   type WaylandLayer,
@@ -119,6 +121,15 @@ interface InvokeKeyBindingRequest {
   displayState: Record<string, OutputStateSnapshot>;
 }
 
+interface WindowResizeRequest {
+  requestId: number;
+  kind: "windowResize";
+  windowId: string;
+  event: RuntimeWindowResizeEvent;
+  nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
+}
+
 interface GetEffectConfigRequest {
   requestId: number;
   kind: "getEffectConfig";
@@ -142,6 +153,7 @@ type RuntimeRequest =
   | EvaluateCachedRequest
   | InvokeHandlerRequest
   | InvokeKeyBindingRequest
+  | WindowResizeRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest;
 
@@ -217,6 +229,23 @@ interface InvokeKeyBindingSuccess {
   requestId: number;
   ok: true;
   kind: "invokeKeyBinding";
+  invoked: boolean;
+  dirty: boolean;
+  dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerNodeIds?: Record<string, string[]>;
+  actions: RuntimeWindowAction[];
+  nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
+  keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
+}
+
+interface WindowResizeSuccess {
+  requestId: number;
+  ok: true;
+  kind: "windowResize";
   invoked: boolean;
   dirty: boolean;
   dirtyWindowIds: string[];
@@ -601,6 +630,21 @@ async function main() {
             requestId: request.requestId,
             ok: true,
             kind: "invokeKeyBinding",
+            ...result,
+            displayConfig: pendingDisplayConfigPayload(),
+            keyBindingConfig,
+            processConfig,
+            processActions,
+          });
+        } else if (request.kind === "windowResize") {
+          const result = invokeWindowResize(events, request.windowId, request.event);
+          const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
+          await writeResponse(output, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "windowResize",
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
@@ -1046,6 +1090,45 @@ function invokeGlobalKeyBinding(
   };
 }
 
+function invokeWindowResize(
+  events: WindowManagerEventController,
+  windowId: string,
+  event: RuntimeWindowResizeEvent,
+): Omit<WindowResizeSuccess, "requestId" | "ok" | "kind"> {
+  const entry = cacheByWindowId.get(windowId);
+  if (!entry) {
+    return {
+      invoked: false,
+      dirty: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    };
+  }
+
+  const invoked = events.emitWindowResize(entry.cache.window, event);
+  if (!invoked) {
+    return {
+      invoked: false,
+      dirty: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    };
+  }
+
+  const result = collectRuntimeMutationState();
+  return {
+    invoked: true,
+    dirty: result.dirty,
+    dirtyWindowIds: result.dirtyWindowIds,
+    dirtyWindowNodeIds: result.dirtyWindowNodeIds,
+    dirtyLayerNodeIds: result.dirtyLayerNodeIds,
+    actions: result.actions,
+    nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+  };
+}
+
 function closeWindow(events: WindowManagerEventController, windowId: string): void {
   const existing = cacheByWindowId.get(windowId);
   if (!existing) {
@@ -1059,6 +1142,7 @@ function closeWindow(events: WindowManagerEventController, windowId: string): vo
   animationEntriesByWindowId.delete(windowId);
   dirtyWindowIds.delete(windowId);
   dropWindowDependencies(windowId);
+  dropWindowState(windowId);
 }
 
 function startClose(

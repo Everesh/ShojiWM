@@ -34,6 +34,7 @@ export interface WaylandWindow {
   readonly appId: import("./signals").ReadonlySignal<string | undefined>;
   readonly position: WindowPosition;
   readonly rect: WindowPosition | undefined;
+  readonly state: import("./window-state").WindowStateStore;
   readonly transform: WindowTransform;
   readonly animation: import("./animation").AnimationController;
   readonly isFocused: import("./signals").ReadonlySignal<boolean>;

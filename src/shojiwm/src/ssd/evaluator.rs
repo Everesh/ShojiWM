@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 
 use super::window_model::{
     ManagedWindowState, WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandWindowAction,
-    WaylandWindowSnapshot,
+    WaylandWindowSnapshot, WindowResizeEventSnapshot,
 };
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
@@ -87,6 +87,15 @@ pub trait DecorationEvaluator {
         Ok(DecorationKeyBindingInvocation::default())
     }
 
+    fn window_resize(
+        &self,
+        _window_id: &str,
+        _event: &WindowResizeEventSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationWindowResizeInvocation, DecorationEvaluationError> {
+        Ok(DecorationWindowResizeInvocation::default())
+    }
+
     fn evaluate_layer_effects(
         &self,
         _output_name: &str,
@@ -144,6 +153,21 @@ pub struct DecorationHandlerInvocation {
 
 #[derive(Debug, Clone, Default)]
 pub struct DecorationKeyBindingInvocation {
+    pub invoked: bool,
+    pub dirty: bool,
+    pub dirty_window_ids: Vec<String>,
+    pub dirty_window_node_ids: std::collections::HashMap<String, Vec<String>>,
+    pub dirty_layer_node_ids: std::collections::HashMap<String, Vec<String>>,
+    pub actions: Vec<RuntimeWindowAction>,
+    pub next_poll_in_ms: Option<u64>,
+    pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
+    pub process_config: Option<RuntimeProcessConfigUpdate>,
+    pub process_actions: Vec<RuntimeProcessAction>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecorationWindowResizeInvocation {
     pub invoked: bool,
     pub dirty: bool,
     pub dirty_window_ids: Vec<String>,
@@ -394,6 +418,17 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "displayState")]
         display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
+    WindowResize {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "windowId")]
+        window_id: &'a str,
+        event: &'a WindowResizeEventSnapshot,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+    },
     StartClose {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -614,6 +649,34 @@ struct RuntimeLayerEffectsResponse {
 
 #[derive(serde::Deserialize)]
 struct RuntimeInvokeKeyBindingResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    ok: bool,
+    invoked: Option<bool>,
+    dirty: Option<bool>,
+    #[serde(rename = "dirtyWindowIds")]
+    dirty_window_ids: Option<Vec<String>>,
+    #[serde(rename = "dirtyWindowNodeIds")]
+    dirty_window_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(rename = "dirtyLayerNodeIds")]
+    dirty_layer_node_ids: Option<std::collections::HashMap<String, Vec<String>>>,
+    actions: Option<Vec<RuntimeWindowAction>>,
+    #[serde(rename = "nextPollInMs")]
+    next_poll_in_ms: Option<u64>,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeWindowResizeResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
     kind: String,
@@ -1579,6 +1642,94 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         }
 
         Ok(DecorationKeyBindingInvocation {
+            invoked: response.invoked.unwrap_or(false),
+            dirty: response.dirty.unwrap_or(false),
+            dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+            dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+            dirty_layer_node_ids: response.dirty_layer_node_ids.unwrap_or_default(),
+            actions: response.actions.unwrap_or_default(),
+            next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
+        })
+    }
+
+    fn window_resize(
+        &self,
+        window_id: &str,
+        event: &WindowResizeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationWindowResizeInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+
+        let Some(_) = runtime_guard.as_ref() else {
+            return Ok(DecorationWindowResizeInvocation::default());
+        };
+
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        let request = serde_json::to_string(&RuntimeRequest::WindowResize {
+            request_id,
+            window_id,
+            event,
+            now_ms,
+            display_state: &display_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeWindowResizeResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if response.kind != "windowResize" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for windowResize: {}",
+                response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+
+        Ok(DecorationWindowResizeInvocation {
             invoked: response.invoked.unwrap_or(false),
             dirty: response.dirty.unwrap_or(false),
             dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),

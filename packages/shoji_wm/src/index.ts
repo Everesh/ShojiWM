@@ -167,6 +167,14 @@ export {
   type WindowFocusListener,
   type WindowManagerEventController,
   type WindowOpenListener,
+  type WindowResizeEdges,
+  type WindowResizeEvent,
+  type WindowResizeListener,
+  type WindowResizePhase,
+  type WindowResizePoint,
+  type WindowResizeRect,
+  type WindowResizeSource,
+  type RuntimeWindowResizeEvent,
   type WindowStartCloseListener,
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
@@ -222,6 +230,13 @@ export {
   type Signal,
   type SignalSetter,
 } from "./signals";
+export {
+  createWindowState,
+  dropWindowState,
+  type WindowStateDefault,
+  type WindowStateKey,
+  type WindowStateStore,
+} from "./window-state";
 export {
   createPoll,
   createManagedPoll,

@@ -44,6 +44,54 @@ pub struct WindowPositionSnapshot {
     pub height: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowResizePointSnapshot {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowResizeEdgesSnapshot {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowResizeSourceSnapshot {
+    Ssd,
+    ClientCsd,
+    Xwayland,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowResizePhaseSnapshot {
+    Start,
+    Update,
+    End,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowResizeEventSnapshot {
+    pub source: WindowResizeSourceSnapshot,
+    pub phase: WindowResizePhaseSnapshot,
+    pub edges: WindowResizeEdgesSnapshot,
+    pub start_pointer: WindowResizePointSnapshot,
+    pub current_pointer: WindowResizePointSnapshot,
+    pub delta: WindowResizePointSnapshot,
+    pub start_rect: WindowPositionSnapshot,
+    pub current_rect: WindowPositionSnapshot,
+    pub output_name: Option<String>,
+    pub timestamp: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedWindowRectSnapshot {

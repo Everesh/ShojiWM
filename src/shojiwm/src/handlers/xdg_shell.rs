@@ -28,6 +28,7 @@ use smithay::{
 
 use crate::{
     grabs::{move_grab::MoveSurfaceGrab, resize_grab::ResizeSurfaceGrab},
+    ssd::WindowResizeSourceSnapshot,
     state::ShojiWM,
 };
 use tracing::{debug, info, warn};
@@ -282,12 +283,18 @@ impl XdgShellHandler for ShojiWM {
 
             surface.send_pending_configure();
 
-            if let Some(grab) = ResizeSurfaceGrab::start(
+            let initial_window_rect = Rectangle::new(initial_window_location, initial_window_size);
+            let initial_event_rect = self.managed_resize_initial_rect(&window, initial_window_rect);
+
+            if let Some(mut grab) = ResizeSurfaceGrab::start(
                 start_data,
                 window,
                 edges.into(),
-                Rectangle::new(initial_window_location, initial_window_size),
+                initial_window_rect,
+                initial_event_rect,
+                WindowResizeSourceSnapshot::ClientCsd,
             ) {
+                grab.notify_start(self);
                 pointer.set_grab(self, grab, serial, Focus::Clear);
             }
         }

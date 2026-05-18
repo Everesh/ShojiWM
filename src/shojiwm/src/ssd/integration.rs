@@ -288,6 +288,18 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn window_resize(
+        &self,
+        window_id: &str,
+        event: &super::WindowResizeEventSnapshot,
+        now_ms: u64,
+    ) -> Result<super::DecorationWindowResizeInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationWindowResizeInvocation::default()),
+            Self::Node(evaluator) => evaluator.window_resize(window_id, event, now_ms),
+        }
+    }
+
     fn start_close(
         &self,
         window_id: &str,
@@ -455,6 +467,70 @@ impl ShojiWM {
             next_root,
         );
         self.schedule_redraw();
+    }
+
+    pub fn invoke_window_resize_event(
+        &mut self,
+        window_id: &str,
+        event: &super::WindowResizeEventSnapshot,
+        now_ms: u64,
+    ) -> bool {
+        self.sync_runtime_display_state();
+        let invocation = match self
+            .decoration_evaluator
+            .window_resize(window_id, event, now_ms)
+        {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                warn!(window_id, ?error, "runtime window resize event failed");
+                return false;
+            }
+        };
+
+        self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_key_binding_config(invocation.key_binding_config);
+        self.consume_runtime_process_config(invocation.process_config);
+        if !invocation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(invocation.process_actions);
+        }
+
+        if invocation.dirty {
+            self.runtime_poll_dirty = true;
+            self.runtime_dirty_window_ids
+                .extend(invocation.dirty_window_ids.into_iter());
+            self.request_tty_maintenance("runtime-window-resize-dirty");
+            self.schedule_redraw();
+        }
+        if !invocation.actions.is_empty() {
+            self.request_tty_maintenance("runtime-window-resize-actions");
+            self.apply_runtime_window_actions(invocation.actions);
+            self.schedule_redraw();
+        }
+        self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+        if invocation.next_poll_in_ms == Some(0) {
+            self.request_tty_maintenance("runtime-window-resize-animation");
+            self.schedule_redraw();
+        }
+
+        invocation.invoked
+    }
+
+    pub fn managed_resize_initial_rect(
+        &self,
+        window: &Window,
+        fallback: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        self.window_decorations
+            .get(window)
+            .filter(|decoration| decoration.managed_window.managed)
+            .map(|decoration| decoration.layout.root.rect)
+            .map(|rect| {
+                smithay::utils::Rectangle::new(
+                    (rect.x, rect.y).into(),
+                    (rect.width, rect.height).into(),
+                )
+            })
+            .unwrap_or(fallback)
     }
 
     pub fn promote_window_to_closing_snapshot(
