@@ -444,6 +444,10 @@ export interface KeyBindingController {
   ): void;
 }
 
+export interface PointerController {
+  bindWindowMoveModifier(modifier: string): void;
+}
+
 export interface BorderValue {
   px: MaybeSignal<number>;
   color: MaybeSignal<string>;
@@ -603,6 +607,7 @@ export interface WindowManagerDefinition {
   output: OutputController;
   process: ProcessController;
   key: KeyBindingController;
+  pointer: PointerController;
   display?: DisplayConfig;
 }
 

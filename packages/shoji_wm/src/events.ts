@@ -47,12 +47,45 @@ export type WindowResizeListener = (event: WindowResizeEvent) => void;
 
 export type RuntimeWindowResizeEvent = Omit<WindowResizeEvent, "window">;
 
+export interface WindowMovePoint {
+  x: number;
+  y: number;
+}
+
+export interface WindowMoveRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type WindowMoveSource = "ssd" | "modifier" | "client-csd" | "xwayland";
+export type WindowMovePhase = "start" | "update" | "end" | "cancel";
+
+export interface WindowMoveEvent {
+  window: WaylandWindow;
+  source: WindowMoveSource;
+  phase: WindowMovePhase;
+  startPointer: WindowMovePoint;
+  currentPointer: WindowMovePoint;
+  delta: WindowMovePoint;
+  startRect: WindowMoveRect;
+  currentRect: WindowMoveRect;
+  outputName?: string;
+  timestamp: number;
+}
+
+export type WindowMoveListener = (event: WindowMoveEvent) => void;
+
+export type RuntimeWindowMoveEvent = Omit<WindowMoveEvent, "window">;
+
 export interface WindowManagerEventController {
   onOpen(listener: WindowOpenListener): () => void;
   onClose(listener: WindowCloseListener): () => void;
   onFocus(listener: WindowFocusListener): () => void;
   onStartClose(listener: WindowStartCloseListener): () => void;
   onWindowResize(listener: WindowResizeListener): () => void;
+  onWindowMove(listener: WindowMoveListener): () => void;
   onCreateLayer(listener: LayerCreateListener): () => void;
   onDestroyLayer(listener: LayerDestroyListener): () => void;
   emitOpen(window: WaylandWindow): void;
@@ -60,6 +93,7 @@ export interface WindowManagerEventController {
   emitFocus(window: WaylandWindow, focused: boolean): void;
   emitStartClose(window: WaylandWindow): void;
   emitWindowResize(window: WaylandWindow, event: RuntimeWindowResizeEvent): boolean;
+  emitWindowMove(window: WaylandWindow, event: RuntimeWindowMoveEvent): boolean;
   emitCreateLayer(layer: WaylandLayer): void;
   emitDestroyLayer(layer: WaylandLayer): void;
 }
@@ -70,6 +104,7 @@ export function createWindowManagerEventController(): WindowManagerEventControll
   const focusListeners = new Set<WindowFocusListener>();
   const startCloseListeners = new Set<WindowStartCloseListener>();
   const resizeListeners = new Set<WindowResizeListener>();
+  const moveListeners = new Set<WindowMoveListener>();
   const createLayerListeners = new Set<LayerCreateListener>();
   const destroyLayerListeners = new Set<LayerDestroyListener>();
 
@@ -93,6 +128,10 @@ export function createWindowManagerEventController(): WindowManagerEventControll
     onWindowResize(listener) {
       resizeListeners.add(listener);
       return () => resizeListeners.delete(listener);
+    },
+    onWindowMove(listener) {
+      moveListeners.add(listener);
+      return () => moveListeners.delete(listener);
     },
     onCreateLayer(listener) {
       createLayerListeners.add(listener);
@@ -127,6 +166,15 @@ export function createWindowManagerEventController(): WindowManagerEventControll
         return false;
       }
       for (const listener of resizeListeners) {
+        listener({ ...event, window });
+      }
+      return true;
+    },
+    emitWindowMove(window, event) {
+      if (moveListeners.size === 0) {
+        return false;
+      }
+      for (const listener of moveListeners) {
         listener({ ...event, window });
       }
       return true;

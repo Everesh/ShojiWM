@@ -311,6 +311,18 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn window_move(
+        &self,
+        window_id: &str,
+        event: &super::WindowMoveEventSnapshot,
+        now_ms: u64,
+    ) -> Result<super::DecorationWindowMoveInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationWindowMoveInvocation::default()),
+            Self::Node(evaluator) => evaluator.window_move(window_id, event, now_ms),
+        }
+    }
+
     fn start_close(
         &self,
         window_id: &str,
@@ -500,6 +512,7 @@ impl ShojiWM {
 
         self.consume_runtime_display_config(invocation.display_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
+        self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_process_config(invocation.process_config);
         if !invocation.process_actions.is_empty() {
             self.apply_runtime_process_actions(invocation.process_actions);
@@ -520,6 +533,53 @@ impl ShojiWM {
         self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
         if invocation.next_poll_in_ms == Some(0) {
             self.request_tty_maintenance("runtime-window-resize-animation");
+            self.schedule_redraw();
+        }
+
+        invocation.invoked
+    }
+
+    pub fn invoke_window_move_event(
+        &mut self,
+        window_id: &str,
+        event: &super::WindowMoveEventSnapshot,
+        now_ms: u64,
+    ) -> bool {
+        self.sync_runtime_display_state();
+        let invocation = match self
+            .decoration_evaluator
+            .window_move(window_id, event, now_ms)
+        {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                warn!(window_id, ?error, "runtime window move event failed");
+                return false;
+            }
+        };
+
+        self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_key_binding_config(invocation.key_binding_config);
+        self.consume_runtime_pointer_config(invocation.pointer_config);
+        self.consume_runtime_process_config(invocation.process_config);
+        if !invocation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(invocation.process_actions);
+        }
+
+        if invocation.dirty {
+            self.runtime_poll_dirty = true;
+            self.runtime_dirty_window_ids
+                .extend(invocation.dirty_window_ids.into_iter());
+            self.request_tty_maintenance("runtime-window-move-dirty");
+            self.schedule_redraw();
+        }
+        if !invocation.actions.is_empty() {
+            self.request_tty_maintenance("runtime-window-move-actions");
+            self.apply_runtime_window_actions(invocation.actions);
+            self.schedule_redraw();
+        }
+        self.runtime_scheduler_enabled = invocation.next_poll_in_ms.is_some();
+        if invocation.next_poll_in_ms == Some(0) {
+            self.request_tty_maintenance("runtime-window-move-animation");
             self.schedule_redraw();
         }
 
@@ -568,6 +628,7 @@ impl ShojiWM {
         let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
         self.consume_runtime_display_config(invocation.display_config.clone());
         self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
+        self.consume_runtime_pointer_config(invocation.pointer_config.clone());
         self.consume_runtime_process_config(invocation.process_config.clone());
         if !invocation.process_actions.is_empty() {
             self.apply_runtime_process_actions(invocation.process_actions.clone());
@@ -694,6 +755,7 @@ impl ShojiWM {
 
         self.consume_runtime_display_config(evaluation.display_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
+        self.consume_runtime_pointer_config(evaluation.pointer_config.clone());
         self.consume_runtime_process_config(evaluation.process_config.clone());
         if !evaluation.process_actions.is_empty() {
             self.apply_runtime_process_actions(evaluation.process_actions.clone());
@@ -789,6 +851,7 @@ impl ShojiWM {
         let apply_started_at = Instant::now();
         self.consume_runtime_display_config(evaluation.display_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
+        self.consume_runtime_pointer_config(evaluation.pointer_config.clone());
         self.consume_runtime_process_config(evaluation.process_config.clone());
         if !evaluation.process_actions.is_empty() {
             self.apply_runtime_process_actions(evaluation.process_actions.clone());
@@ -852,6 +915,7 @@ impl ShojiWM {
         let mut pending_finalize_close_damage = Vec::new();
         let mut pending_display_config_updates = Vec::new();
         let mut pending_key_binding_config_updates = Vec::new();
+        let mut pending_pointer_config_updates = Vec::new();
         let mut pending_process_config_updates = Vec::new();
         let mut pending_process_actions = Vec::new();
         self.sync_runtime_display_state();
@@ -977,6 +1041,7 @@ impl ShojiWM {
                 let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                 pending_display_config_updates.push(evaluation.display_config.clone());
                 pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
+                pending_pointer_config_updates.push(evaluation.pointer_config.clone());
                 pending_process_config_updates.push(evaluation.process_config.clone());
                 pending_process_actions.extend(evaluation.process_actions.clone());
                 let tree = DecorationTree::new(evaluation.node);
@@ -1129,6 +1194,7 @@ impl ShojiWM {
                     let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                     pending_display_config_updates.push(evaluation.display_config.clone());
                     pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
+                    pending_pointer_config_updates.push(evaluation.pointer_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     cached.tree = DecorationTree::new(evaluation.node);
@@ -1284,6 +1350,7 @@ impl ShojiWM {
                     let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
                     pending_display_config_updates.push(evaluation.display_config.clone());
                     pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
+                    pending_pointer_config_updates.push(evaluation.pointer_config.clone());
                     pending_process_config_updates.push(evaluation.process_config.clone());
                     pending_process_actions.extend(evaluation.process_actions.clone());
                     let rebuild_started_at = Instant::now();
@@ -1915,6 +1982,9 @@ impl ShojiWM {
         }
         for update in pending_key_binding_config_updates {
             self.consume_runtime_key_binding_config(update);
+        }
+        for update in pending_pointer_config_updates {
+            self.consume_runtime_pointer_config(update);
         }
         for update in pending_process_config_updates {
             self.consume_runtime_process_config(update);

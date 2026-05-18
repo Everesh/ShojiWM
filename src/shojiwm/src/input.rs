@@ -21,7 +21,7 @@ use crate::{
     },
     ssd::{
         DecorationEvaluator, DecorationHitTestResult, LogicalPoint, ResizeEdges,
-        RuntimeWindowAction, WindowAction, WindowResizeSourceSnapshot,
+        RuntimeWindowAction, WindowAction, WindowMoveSourceSnapshot, WindowResizeSourceSnapshot,
     },
     state::{ShojiWM, TrackedDecorationInteractionTarget},
 };
@@ -70,7 +70,8 @@ impl ShojiWM {
                         event.state(),
                         serial,
                         time,
-                        |_, modifiers, handle| {
+                        |data, modifiers, handle| {
+                            data.current_keyboard_modifiers = modifiers.clone();
                             if let Some(binding_id) = runtime_key_bindings
                                 .iter()
                                 .find(|binding| binding.matches(key_phase, modifiers, &handle))
@@ -129,6 +130,7 @@ impl ShojiWM {
                                 self.consume_runtime_key_binding_config(
                                     invocation.key_binding_config,
                                 );
+                                self.consume_runtime_pointer_config(invocation.pointer_config);
                                 self.consume_runtime_process_config(invocation.process_config);
                                 if !invocation.process_actions.is_empty() {
                                     self.apply_runtime_process_actions(invocation.process_actions);
@@ -369,6 +371,67 @@ impl ShojiWM {
                         self.press_decoration_active_target(pointer.current_location());
                     }
 
+                    if button == 272
+                        && layer_under_pointer.is_none()
+                        && self.runtime_window_move_modifier.is_some_and(|modifier| {
+                            modifier.matches(&self.current_keyboard_modifiers)
+                        })
+                        && let Some(window) = self
+                            .window_under_transformed(LogicalPoint::new(
+                                pointer.current_location().x.floor() as i32,
+                                pointer.current_location().y.floor() as i32,
+                            ))
+                            .map(|(window, _)| window.clone())
+                        && self.pointer_allows_window_interaction(
+                            self.pointer_contents
+                                .surface
+                                .as_ref()
+                                .map(|(surface, _)| surface),
+                            &window,
+                        )
+                    {
+                        self.focus_window(&window, serial);
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+                        if let (Some(start_data), Some(initial_window_location)) = (
+                            pointer.grab_start_data(),
+                            self.space.element_location(&window),
+                        ) {
+                            let initial_window_rect = smithay::utils::Rectangle::new(
+                                initial_window_location,
+                                window.geometry().size,
+                            );
+                            let initial_event_rect =
+                                self.managed_resize_initial_rect(&window, initial_window_rect);
+                            let mut grab = MoveSurfaceGrab::start(
+                                start_data,
+                                window,
+                                initial_window_location,
+                                initial_event_rect,
+                                WindowMoveSourceSnapshot::Modifier,
+                            );
+                            grab.notify_start(self);
+                            pointer.set_grab(
+                                self,
+                                grab,
+                                serial,
+                                smithay::input::pointer::Focus::Clear,
+                            );
+                        }
+
+                        pointer.frame(self);
+                        let _ = self.display_handle.flush_clients();
+                        self.schedule_redraw();
+                        return;
+                    }
+
                     if layer_under_pointer.is_none()
                         && let Some((window, hit)) =
                             self.decoration_under(pointer.current_location())
@@ -425,6 +488,9 @@ impl ShojiWM {
                                     self.consume_runtime_key_binding_config(
                                         invocation.key_binding_config.clone(),
                                     );
+                                    self.consume_runtime_pointer_config(
+                                        invocation.pointer_config.clone(),
+                                    );
                                     self.consume_runtime_process_config(
                                         invocation.process_config.clone(),
                                     );
@@ -470,11 +536,20 @@ impl ShojiWM {
                                     pointer.grab_start_data(),
                                     self.space.element_location(&window),
                                 ) {
-                                    let grab = MoveSurfaceGrab {
+                                    let initial_window_rect = smithay::utils::Rectangle::new(
+                                        initial_window_location,
+                                        window.geometry().size,
+                                    );
+                                    let initial_event_rect = self
+                                        .managed_resize_initial_rect(&window, initial_window_rect);
+                                    let mut grab = MoveSurfaceGrab::start(
                                         start_data,
                                         window,
                                         initial_window_location,
-                                    };
+                                        initial_event_rect,
+                                        WindowMoveSourceSnapshot::Ssd,
+                                    );
+                                    grab.notify_start(self);
                                     pointer.set_grab(
                                         self,
                                         grab,
@@ -909,6 +984,7 @@ impl ShojiWM {
 
         self.consume_runtime_display_config(invocation.display_config.clone());
         self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
+        self.consume_runtime_pointer_config(invocation.pointer_config.clone());
         self.consume_runtime_process_config(invocation.process_config.clone());
         if !invocation.process_actions.is_empty() {
             self.apply_runtime_process_actions(invocation.process_actions.clone());

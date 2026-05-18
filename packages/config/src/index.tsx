@@ -177,6 +177,12 @@ WINDOW_MANAGER.event.onWindowResize((event) => {
     event.window.state[WINDOW_STATE_RECT].set(event.currentRect);
 });
 
+WINDOW_MANAGER.pointer.bindWindowMoveModifier("Super");
+
+WINDOW_MANAGER.event.onWindowMove((event) => {
+    event.window.state[WINDOW_STATE_RECT].set(event.currentRect);
+});
+
 WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
     const openVariable = window.animation.signal(openAnimation);
     const opacity = openVariable;

@@ -18,8 +18,10 @@ function findConfigRoot(entryPath: string): string {
 import {
   advanceAnimationFrame,
   beginKeyBindingRegistration,
+  beginPointerConfigRegistration,
   beginProcessConfigRegistration,
   commitKeyBindingRegistration,
+  commitPointerConfigRegistration,
   commitProcessConfigRegistration,
   drainPendingProcessActions,
   hasActiveAnimations,
@@ -41,6 +43,7 @@ import {
   invokeKeyBinding,
   takePendingDisplayConfig,
   takePendingKeyBindingConfig,
+  takePendingPointerConfig,
   takePendingProcessConfig,
   leaveWindowDependencyScope,
   leaveLayerDependencyScope,
@@ -57,6 +60,7 @@ import {
   type PollDirtyMode,
   type PollHandle,
   type RuntimeWindowResizeEvent,
+  type RuntimeWindowMoveEvent,
   updateOutputState,
   type WaylandLayerSnapshot,
   type WaylandLayer,
@@ -139,6 +143,15 @@ interface WindowResizeRequest {
   displayState: Record<string, OutputStateSnapshot>;
 }
 
+interface WindowMoveRequest {
+  requestId: number;
+  kind: "windowMove";
+  windowId: string;
+  event: RuntimeWindowMoveEvent;
+  nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
+}
+
 interface GetEffectConfigRequest {
   requestId: number;
   kind: "getEffectConfig";
@@ -164,6 +177,7 @@ type RuntimeRequest =
   | InvokeHandlerRequest
   | InvokeKeyBindingRequest
   | WindowResizeRequest
+  | WindowMoveRequest
   | GetEffectConfigRequest
   | EvaluateLayerEffectsRequest;
 
@@ -181,6 +195,7 @@ interface EvaluateSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -197,6 +212,7 @@ interface SchedulerTickSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -207,6 +223,7 @@ interface WindowClosedSuccess {
   kind: "windowClosed";
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -231,6 +248,7 @@ interface InvokeHandlerSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -248,6 +266,7 @@ interface InvokeKeyBindingSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -265,6 +284,25 @@ interface WindowResizeSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
+}
+
+interface WindowMoveSuccess {
+  requestId: number;
+  ok: true;
+  kind: "windowMove";
+  invoked: boolean;
+  dirty: boolean;
+  dirtyWindowIds: string[];
+  dirtyWindowNodeIds?: Record<string, string[]>;
+  dirtyLayerNodeIds?: Record<string, string[]>;
+  actions: RuntimeWindowAction[];
+  nextPollInMs?: number;
+  displayConfig?: { outputs: DisplayConfigDraft };
+  keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -284,6 +322,7 @@ interface StartCloseSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -306,6 +345,7 @@ interface EvaluateLayerEffectsSuccess {
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -352,6 +392,10 @@ interface RuntimeKeyBindingConfigEntry {
   on: "press" | "release";
 }
 
+interface RuntimePointerConfig {
+  windowMoveModifier?: string;
+}
+
 function pendingDisplayConfigPayload():
   | { outputs: DisplayConfigDraft }
   | undefined {
@@ -380,6 +424,10 @@ function pendingKeyBindingConfigPayload():
     | RuntimeKeyBindingConfigEntry[]
     | undefined;
   return entries ? { entries } : undefined;
+}
+
+function pendingPointerConfigPayload(): RuntimePointerConfig | undefined {
+  return takePendingPointerConfig() as RuntimePointerConfig | undefined;
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
@@ -496,9 +544,11 @@ async function main() {
   installAssetResolverBridge(findConfigRoot(configPath));
   installProcessResolverBridge(resolve(configPath));
   beginKeyBindingRegistration();
+  beginPointerConfigRegistration();
   beginProcessConfigRegistration();
   const loaded = await import(moduleUrl).finally(() => {
     commitKeyBindingRegistration();
+    commitPointerConfigRegistration();
     commitProcessConfigRegistration();
   });
   const decoration = resolveDecoration(loaded);
@@ -532,6 +582,7 @@ async function main() {
           ? evaluateSnapshot(decoration, events, effectConfig, request.snapshot, request.nowMs)
           : evaluatePreconfigure(decoration, events, effectConfig, request.snapshot);
         const keyBindingConfig = pendingKeyBindingConfigPayload();
+        const pointerConfig = pendingPointerConfigPayload();
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
         const cached = request.kind === "evaluate"
@@ -553,6 +604,7 @@ async function main() {
             : undefined,
           displayConfig: pendingDisplayConfigPayload(),
           keyBindingConfig,
+          pointerConfig,
           processConfig,
           processActions,
         });
@@ -560,6 +612,7 @@ async function main() {
         if (request.kind === "schedulerTick") {
           const tick = processSchedulerTick(request.nowMs);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -574,12 +627,14 @@ async function main() {
             nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else if (request.kind === "windowClosed") {
           closeWindow(events, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -588,12 +643,14 @@ async function main() {
             kind: "windowClosed",
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else if (request.kind === "startClose") {
           const result = startClose(events, effectConfig, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -603,12 +660,14 @@ async function main() {
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else if (request.kind === "evaluateCached") {
           const result = evaluateCached(effectConfig, request.windowId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -623,6 +682,7 @@ async function main() {
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
@@ -637,6 +697,7 @@ async function main() {
         } else if (request.kind === "evaluateLayerEffects") {
           const result = evaluateLayerEffects(events, request.outputName, request.layers);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -647,12 +708,14 @@ async function main() {
             nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else if (request.kind === "invokeKeyBinding") {
           const result = invokeGlobalKeyBinding(request.bindingId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -662,12 +725,14 @@ async function main() {
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else if (request.kind === "windowResize") {
           const result = invokeWindowResize(events, request.windowId, request.event);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -677,12 +742,31 @@ async function main() {
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
+            processConfig,
+            processActions,
+          });
+        } else if (request.kind === "windowMove") {
+          const result = invokeWindowMove(events, request.windowId, request.event);
+          const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
+          const processConfig = pendingProcessConfigPayload();
+          const processActions = pendingProcessActionsPayload();
+          await writeResponse(output, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "windowMove",
+            ...result,
+            displayConfig: pendingDisplayConfigPayload(),
+            keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
         } else {
           const result = invokeHandler(effectConfig, request.windowId, request.handlerId);
           const keyBindingConfig = pendingKeyBindingConfigPayload();
+          const pointerConfig = pendingPointerConfigPayload();
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
           await writeResponse(output, {
@@ -692,6 +776,7 @@ async function main() {
             ...result,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
+            pointerConfig,
             processConfig,
             processActions,
           });
@@ -1234,6 +1319,45 @@ function invokeWindowResize(
   };
 }
 
+function invokeWindowMove(
+  events: WindowManagerEventController,
+  windowId: string,
+  event: RuntimeWindowMoveEvent,
+): Omit<WindowMoveSuccess, "requestId" | "ok" | "kind"> {
+  const entry = cacheByWindowId.get(windowId);
+  if (!entry) {
+    return {
+      invoked: false,
+      dirty: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    };
+  }
+
+  const invoked = events.emitWindowMove(entry.cache.window, event);
+  if (!invoked) {
+    return {
+      invoked: false,
+      dirty: false,
+      dirtyWindowIds: [],
+      actions: [],
+      nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
+    };
+  }
+
+  const result = collectRuntimeMutationState();
+  return {
+    invoked: true,
+    dirty: result.dirty,
+    dirtyWindowIds: result.dirtyWindowIds,
+    dirtyWindowNodeIds: result.dirtyWindowNodeIds,
+    dirtyLayerNodeIds: result.dirtyLayerNodeIds,
+    actions: result.actions,
+    nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+  };
+}
+
 function closeWindow(events: WindowManagerEventController, windowId: string): void {
   const existing = cacheByWindowId.get(windowId);
   if (!existing) {
@@ -1490,6 +1614,7 @@ function writeResponse(
     | InvokeHandlerSuccess
     | InvokeKeyBindingSuccess
     | WindowResizeSuccess
+    | WindowMoveSuccess
     | GetEffectConfigSuccess
     | EvaluateLayerEffectsSuccess
     | RuntimeFailure,

@@ -19,6 +19,7 @@ use smithay::{
     },
     input::{
         Seat, SeatState,
+        keyboard::ModifiersState,
         pointer::{CursorIcon, CursorImageStatus},
     },
     output::{Mode as OutputMode, Output, Scale as OutputScale},
@@ -79,6 +80,9 @@ use crate::backend::visual::{inverse_transform_point, transformed_rect, transfor
 use crate::runtime_key_binding::{
     CompiledRuntimeKeyBinding, RuntimeKeyBindingConfigUpdate, RuntimeKeyBindingEntry,
     compile_runtime_key_bindings,
+};
+use crate::runtime_pointer::{
+    RuntimePointerConfigUpdate, RuntimePointerModifier, parse_runtime_pointer_modifier,
 };
 use crate::runtime_process::{
     ManagedRuntimeService, RuntimeProcessAction, RuntimeProcessConfigUpdate, RuntimeProcessEntry,
@@ -260,6 +264,8 @@ pub struct ShojiWM {
     pub runtime_managed_services: BTreeMap<String, ManagedRuntimeService>,
     pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
+    pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
+    pub current_keyboard_modifiers: ModifiersState,
     pub suggested_window_offset: Option<(i32, i32)>,
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
@@ -716,6 +722,8 @@ impl ShojiWM {
             runtime_managed_services: Default::default(),
             runtime_key_binding_entries: Default::default(),
             runtime_key_bindings: Vec::new(),
+            runtime_window_move_modifier: None,
+            current_keyboard_modifiers: ModifiersState::default(),
             suggested_window_offset: None,
             async_asset_dirty: false,
             configured_background_effect,
@@ -1139,6 +1147,7 @@ impl ShojiWM {
 
                 state.consume_runtime_display_config(tick.display_config);
                 state.consume_runtime_key_binding_config(tick.key_binding_config);
+                state.consume_runtime_pointer_config(tick.pointer_config);
                 state.consume_runtime_process_config(tick.process_config);
                 if !tick.process_actions.is_empty() {
                     state.apply_runtime_process_actions(tick.process_actions);
@@ -1183,6 +1192,7 @@ impl ShojiWM {
             Ok(result) => {
                 self.consume_runtime_display_config(result.display_config);
                 self.consume_runtime_key_binding_config(result.key_binding_config);
+                self.consume_runtime_pointer_config(result.pointer_config);
                 self.consume_runtime_process_config(result.process_config);
                 if !result.process_actions.is_empty() {
                     self.apply_runtime_process_actions(result.process_actions);
@@ -1416,6 +1426,28 @@ impl ShojiWM {
     ) {
         if let Some(update) = update {
             self.apply_runtime_key_binding_config_update(update);
+        }
+    }
+
+    pub fn apply_runtime_pointer_config_update(&mut self, update: RuntimePointerConfigUpdate) {
+        self.runtime_window_move_modifier = update.window_move_modifier.and_then(|shortcut| {
+            match parse_runtime_pointer_modifier(&shortcut) {
+                Ok(modifier) => Some(modifier),
+                Err(error) => {
+                    tracing::warn!(
+                        window_move_modifier = shortcut,
+                        ?error,
+                        "ignoring invalid runtime pointer modifier"
+                    );
+                    None
+                }
+            }
+        });
+    }
+
+    pub fn consume_runtime_pointer_config(&mut self, update: Option<RuntimePointerConfigUpdate>) {
+        if let Some(update) = update {
+            self.apply_runtime_pointer_config_update(update);
         }
     }
 

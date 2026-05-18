@@ -89,6 +89,7 @@ import type {
   KeyBindingController,
   KeyBindingOptions,
   KeyBindingEventPhase,
+  PointerController,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
 import {
@@ -98,6 +99,12 @@ import {
   invokeKeyBinding,
   takePendingKeyBindingConfig,
 } from "./key";
+import {
+  POINTER_CONTROLLER,
+  beginPointerConfigRegistration,
+  commitPointerConfigRegistration,
+  takePendingPointerConfig,
+} from "./pointer";
 import { OUTPUT_CONTROLLER } from "./output";
 import {
   PROCESS_CONTROLLER,
@@ -177,6 +184,13 @@ export {
   type WindowResizeRect,
   type WindowResizeSource,
   type RuntimeWindowResizeEvent,
+  type RuntimeWindowMoveEvent,
+  type WindowMoveEvent,
+  type WindowMoveListener,
+  type WindowMovePhase,
+  type WindowMovePoint,
+  type WindowMoveRect,
+  type WindowMoveSource,
   type WindowStartCloseListener,
 } from "./events";
 export { createReactiveWindow } from "./reactive-window";
@@ -193,6 +207,12 @@ export {
   invokeKeyBinding,
   takePendingKeyBindingConfig,
 } from "./key";
+export {
+  POINTER_CONTROLLER,
+  beginPointerConfigRegistration,
+  commitPointerConfigRegistration,
+  takePendingPointerConfig,
+} from "./pointer";
 export {
   PROCESS_CONTROLLER,
   beginProcessConfigRegistration,
@@ -358,6 +378,7 @@ export type {
   KeyBindingController,
   KeyBindingOptions,
   KeyBindingEventPhase,
+  PointerController,
 } from "./types";
 export { DecorationSerializationError, serializeDecorationTree } from "./serialize";
 
@@ -402,6 +423,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   output: OUTPUT_CONTROLLER,
   process: PROCESS_CONTROLLER,
   key: KEY_BINDING_CONTROLLER,
+  pointer: POINTER_CONTROLLER,
 };
 
 export function windowAction(

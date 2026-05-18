@@ -3,7 +3,13 @@
 //! eg. Usually whenever a user clicks on the app's titlebar and starts dragging, the compositors
 //! enters a MoveSurfaceGrab state.
 
-use crate::{ssd::LogicalRect, state::ShojiWM};
+use crate::{
+    ssd::{
+        LogicalRect, WindowMoveEventSnapshot, WindowMovePhaseSnapshot, WindowMoveSourceSnapshot,
+        WindowPositionSnapshot, WindowResizePointSnapshot,
+    },
+    state::ShojiWM,
+};
 use smithay::{
     desktop::Window,
     input::pointer::{
@@ -20,6 +26,83 @@ pub struct MoveSurfaceGrab {
     pub start_data: PointerGrabStartData<ShojiWM>,
     pub window: Window,
     pub initial_window_location: Point<i32, Logical>,
+    pub initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
+    pub source: WindowMoveSourceSnapshot,
+    pub runtime_managed: bool,
+    pub last_pointer: Point<f64, Logical>,
+}
+
+impl MoveSurfaceGrab {
+    pub fn start(
+        start_data: PointerGrabStartData<ShojiWM>,
+        window: Window,
+        initial_window_location: Point<i32, Logical>,
+        initial_event_rect: smithay::utils::Rectangle<i32, Logical>,
+        source: WindowMoveSourceSnapshot,
+    ) -> Self {
+        let last_pointer = start_data.location;
+        Self {
+            start_data,
+            window,
+            initial_window_location,
+            initial_event_rect,
+            source,
+            runtime_managed: false,
+            last_pointer,
+        }
+    }
+
+    pub fn notify_start(&mut self, data: &mut ShojiWM) {
+        self.runtime_managed = self.invoke_runtime_event(
+            data,
+            WindowMovePhaseSnapshot::Start,
+            self.start_data.location,
+        );
+    }
+
+    fn invoke_runtime_event(
+        &self,
+        data: &mut ShojiWM,
+        phase: WindowMovePhaseSnapshot,
+        current_pointer: Point<f64, Logical>,
+    ) -> bool {
+        let window_id = data.snapshot_window(&self.window).id;
+        let event = self.runtime_event(data, phase, current_pointer);
+        let now_ms = std::time::Duration::from(data.clock.now()).as_millis() as u64;
+        data.invoke_window_move_event(&window_id, &event, now_ms)
+    }
+
+    fn runtime_event(
+        &self,
+        data: &ShojiWM,
+        phase: WindowMovePhaseSnapshot,
+        current_pointer: Point<f64, Logical>,
+    ) -> WindowMoveEventSnapshot {
+        let start_pointer = self.start_data.location;
+        let delta = current_pointer - start_pointer;
+        let current_rect = move_rect_for_delta(self.initial_event_rect, delta);
+        let output_name = data
+            .space
+            .outputs()
+            .find(|output| {
+                data.space
+                    .output_geometry(output)
+                    .is_some_and(|geometry| geometry.contains(current_pointer.to_i32_round()))
+            })
+            .map(|output| output.name());
+
+        WindowMoveEventSnapshot {
+            source: self.source,
+            phase,
+            start_pointer: point_snapshot(start_pointer),
+            current_pointer: point_snapshot(current_pointer),
+            delta: point_snapshot(delta),
+            start_rect: rect_snapshot(self.initial_event_rect),
+            current_rect: rect_snapshot(current_rect),
+            output_name,
+            timestamp: std::time::Duration::from(data.clock.now()).as_millis() as u64,
+        }
+    }
 }
 
 impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
@@ -32,6 +115,12 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
     ) {
         // While the grab is active, no client has pointer focus
         handle.motion(data, None, event);
+        self.last_pointer = event.location;
+
+        if self.runtime_managed {
+            self.invoke_runtime_event(data, WindowMovePhaseSnapshot::Update, event.location);
+            return;
+        }
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
@@ -140,6 +229,9 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
         if !handle.current_pressed().contains(&BTN_LEFT) {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
+            if self.runtime_managed {
+                self.invoke_runtime_event(data, WindowMovePhaseSnapshot::End, self.last_pointer);
+            }
         }
     }
 
@@ -233,4 +325,34 @@ impl PointerGrab<ShojiWM> for MoveSurfaceGrab {
     }
 
     fn unset(&mut self, _data: &mut ShojiWM) {}
+}
+
+fn move_rect_for_delta(
+    initial: smithay::utils::Rectangle<i32, Logical>,
+    delta: Point<f64, Logical>,
+) -> smithay::utils::Rectangle<i32, Logical> {
+    smithay::utils::Rectangle::new(
+        (
+            initial.loc.x + delta.x.round() as i32,
+            initial.loc.y + delta.y.round() as i32,
+        )
+            .into(),
+        initial.size,
+    )
+}
+
+fn point_snapshot(point: Point<f64, Logical>) -> WindowResizePointSnapshot {
+    WindowResizePointSnapshot {
+        x: point.x.round() as i32,
+        y: point.y.round() as i32,
+    }
+}
+
+fn rect_snapshot(rect: smithay::utils::Rectangle<i32, Logical>) -> WindowPositionSnapshot {
+    WindowPositionSnapshot {
+        x: rect.loc.x,
+        y: rect.loc.y,
+        width: rect.size.w,
+        height: rect.size.h,
+    }
 }

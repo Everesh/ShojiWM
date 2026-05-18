@@ -92,6 +92,38 @@ pub struct WindowResizeEventSnapshot {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowMoveSourceSnapshot {
+    Ssd,
+    Modifier,
+    ClientCsd,
+    Xwayland,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowMovePhaseSnapshot {
+    Start,
+    Update,
+    End,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowMoveEventSnapshot {
+    pub source: WindowMoveSourceSnapshot,
+    pub phase: WindowMovePhaseSnapshot,
+    pub start_pointer: WindowResizePointSnapshot,
+    pub current_pointer: WindowResizePointSnapshot,
+    pub delta: WindowResizePointSnapshot,
+    pub start_rect: WindowPositionSnapshot,
+    pub current_rect: WindowPositionSnapshot,
+    pub output_name: Option<String>,
+    pub timestamp: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedWindowRectSnapshot {
