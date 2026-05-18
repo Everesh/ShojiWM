@@ -260,20 +260,11 @@ impl ClippedSurfaceElement {
             .expect("clipped surface shader should be cached");
 
         let element_geometry = inner.geometry(output_scale);
-        // Prefer the compositor-computed slot geometry when it only differs by
-        // a tiny amount from Smithay's surface element geometry. The logs for
-        // the current gap bug show the border/client slot rounded to 1472 px
-        // wide while the surface element stayed at 1471 px, producing
-        // `edge_delta=(1,0,1,0)` and a visible 1 px gap. At the same time we
-        // do not want to reintroduce the earlier "second raster grid" issue by
-        // blindly replacing the element geometry with a meaningfully different
-        // forced geometry.
-        let render_geometry = forced_geometry
-            .filter(|forced| {
-                (forced.size.w - element_geometry.size.w).abs() <= 1
-                    && (forced.size.h - element_geometry.size.h).abs() <= 1
-            })
-            .unwrap_or(element_geometry);
+        // ContentClip callers pass forced_geometry when the compositor has an explicit
+        // destination rectangle for the client slot. Prefer that rectangle even when the
+        // client has not committed the matching buffer size yet; otherwise fast TS-managed
+        // rect changes can leave a visible gap between the stale client buffer and SSD border.
+        let render_geometry = forced_geometry.unwrap_or(element_geometry);
         let output_scale_x = output_scale.x.abs().max(0.0001) as f32;
         let output_scale_y = output_scale.y.abs().max(0.0001) as f32;
         // render_geometry.loc is in output-local physical coordinates.
