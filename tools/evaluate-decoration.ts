@@ -61,6 +61,9 @@ async function main() {
     minimize() {
       console.log("[runtime] minimize() requested");
     },
+    focus() {
+      console.log("[runtime] focus() requested");
+    },
     setCloseAnimationDuration(durationMs) {
       console.log(`[runtime] setCloseAnimationDuration(${durationMs}) requested`);
     },

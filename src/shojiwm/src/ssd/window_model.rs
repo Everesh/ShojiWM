@@ -313,6 +313,7 @@ pub enum WaylandWindowAction {
     FinalizeClose,
     Maximize,
     Minimize,
+    Focus,
 }
 
 impl ShojiWM {
@@ -612,10 +613,12 @@ mod tests {
             serde_json::to_string(&WaylandWindowAction::Maximize).expect("serialize maximize");
         let minimize =
             serde_json::to_string(&WaylandWindowAction::Minimize).expect("serialize minimize");
+        let focus = serde_json::to_string(&WaylandWindowAction::Focus).expect("serialize focus");
 
         assert_eq!(close, "\"close\"");
         assert_eq!(finalize_close, "\"finalizeClose\"");
         assert_eq!(maximize, "\"maximize\"");
         assert_eq!(minimize, "\"minimize\"");
+        assert_eq!(focus, "\"focus\"");
     }
 }

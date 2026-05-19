@@ -66,6 +66,7 @@ import type {
   WindowBorderProps,
   WindowManagerDefinition,
   WindowManagerEffectConfig,
+  WindowManagerWindowController,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -369,6 +370,7 @@ export type {
   WindowBorderProps,
   WindowManagerDefinition,
   WindowManagerEffectConfig,
+  WindowManagerWindowController,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -427,6 +429,12 @@ export const ClientWindow = defineIntrinsicComponent<ClientWindowProps>("Window"
 export const Window = ClientWindow;
 export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowBorder");
 
+const WINDOW_CONTROLLER: WindowManagerWindowController = {
+  focus(window) {
+    window.focus();
+  },
+};
+
 /**
  * Placeholder namespace for future WM-level entrypoints.
  */
@@ -440,6 +448,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   process: PROCESS_CONTROLLER,
   key: KEY_BINDING_CONTROLLER,
   pointer: POINTER_CONTROLLER,
+  window: WINDOW_CONTROLLER,
 };
 
 export function windowAction(

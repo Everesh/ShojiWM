@@ -244,7 +244,7 @@ interface WindowClosedSuccess {
 
 interface RuntimeWindowAction {
   windowId: string;
-  action: "close" | "finalizeClose" | "maximize" | "minimize";
+  action: "close" | "finalizeClose" | "maximize" | "minimize" | "focus";
 }
 
 interface InvokeHandlerSuccess {
@@ -1041,6 +1041,9 @@ function createRuntimeCacheEntry(
     },
     minimize() {
       entry.pendingActions.push({ windowId: latestSnapshot.id, action: "minimize" });
+    },
+    focus() {
+      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "focus" });
     },
     setCloseAnimationDuration(durationMs) {
       entry.closeAnimationDurationMs = Math.max(0, Math.floor(durationMs));

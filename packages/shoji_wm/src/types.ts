@@ -54,6 +54,7 @@ export interface WaylandWindow {
   close(): void;
   maximize(): void;
   minimize(): void;
+  focus(): void;
   setCloseAnimationDuration(durationMs: number): void;
   isXWayland(): boolean;
 }
@@ -626,6 +627,7 @@ export interface WindowManagerDefinition {
   process: ProcessController;
   key: KeyBindingController;
   pointer: PointerController;
+  window: WindowManagerWindowController;
   display?: DisplayConfig;
 }
 
@@ -691,8 +693,20 @@ export interface WaylandWindowActions {
   close(): void;
   maximize(): void;
   minimize(): void;
+  focus(): void;
   setCloseAnimationDuration(durationMs: number): void;
   isXWayland(): boolean;
+}
+
+export interface WindowManagerWindowController {
+  /**
+   * Request keyboard focus for `window`. The compositor raises it, updates
+   * keyboard focus, and emits the usual focus-changed notifications — so
+   * `isFocused` signals, decoration reevaluation, and
+   * `WINDOW_MANAGER.event.onFocus` listeners all fire just as they would for
+   * a user-initiated focus change.
+   */
+  focus(window: WaylandWindow): void;
 }
 
 export interface ReactiveWaylandWindowHandle {

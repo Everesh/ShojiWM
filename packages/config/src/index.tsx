@@ -149,6 +149,7 @@ const WINDOW_STATE_RECT = createWindowState<ManagedWindowRect>("rect", {
 const windowStack = createWindowStack();
 
 WINDOW_MANAGER.event.onOpen((window) => {
+    window.focus();
     windowStack.add(window);
     window.state[WINDOW_STATE_RECT].set(window.rect ?? DEFAULT_WINDOW_RECT);
     window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);

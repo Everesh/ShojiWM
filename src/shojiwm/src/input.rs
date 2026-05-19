@@ -869,6 +869,10 @@ impl ShojiWM {
                         toplevel.send_pending_configure();
                     }
                 }
+                crate::ssd::WaylandWindowAction::Focus => {
+                    let serial = SERIAL_COUNTER.next_serial();
+                    self.focus_window(&window, serial);
+                }
                 crate::ssd::WaylandWindowAction::FinalizeClose => {}
                 crate::ssd::WaylandWindowAction::Minimize => {}
             }
