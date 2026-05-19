@@ -13,7 +13,6 @@ use smithay::{
 
 use crate::backend::visual::{
     PreciseLogicalRect, SnappedLogicalRect, snapped_precise_logical_rect_for_element,
-    snapped_precise_logical_rect_in_element_space,
 };
 use crate::ssd::ContentClip;
 
@@ -107,6 +106,21 @@ fn union_physical_rect(
         Point::from((left, top)),
         ((right - left).max(0), (bottom - top).max(0)).into(),
     )
+}
+
+fn snapped_physical_rect_in_element_space(
+    rect: Rectangle<i32, Physical>,
+    element_geometry: Rectangle<i32, Physical>,
+    output_scale: Scale<f64>,
+) -> SnappedLogicalRect {
+    let scale_x = output_scale.x.abs().max(0.0001) as f32;
+    let scale_y = output_scale.y.abs().max(0.0001) as f32;
+    SnappedLogicalRect {
+        x: (rect.loc.x - element_geometry.loc.x) as f32 / scale_x,
+        y: (rect.loc.y - element_geometry.loc.y) as f32 / scale_y,
+        width: rect.size.w.max(0) as f32 / scale_x,
+        height: rect.size.h.max(0) as f32 / scale_y,
+    }
 }
 
 #[derive(Debug)]
@@ -316,32 +330,29 @@ impl ClippedSurfaceElement {
             )),
             clip.rect.size,
         );
-        let mut snapped_slot_rect = snapped_precise_logical_rect_in_element_space(
-            clip.rect_precise,
-            element_rect_precise,
-            output_scale,
-        );
-        let snap_rect_with_output_origin = snapped_precise_logical_rect_for_element(
-            clip.rect_precise,
-            element_rect_precise,
-            output_origin,
-            output_scale,
-        );
+        let mut snapped_slot_rect = forced_geometry
+            .map(|forced| {
+                snapped_physical_rect_in_element_space(forced, render_geometry, output_scale)
+            })
+            .unwrap_or_else(|| {
+                snapped_precise_logical_rect_for_element(
+                    clip.rect_precise,
+                    element_rect_precise,
+                    output_origin,
+                    output_scale,
+                )
+            });
+        let snap_rect_with_output_origin = snapped_slot_rect;
         let clip_size_delta_px = (
             ((snapped_slot_rect.width - element_rect_logical.width) * output_scale_x).abs(),
             ((snapped_slot_rect.height - element_rect_logical.height) * output_scale_y).abs(),
         );
-        // When we intentionally override the draw quad with `forced_geometry`,
-        // Smithay's surface element geometry and the compositor's chosen slot
-        // can differ by a single rasterized pixel due to independent rounding
-        // of viewport-dst and logical edges. In that case the client visibly
-        // "jitters" by 1 px while moving. Snap the slot back onto the draw
-        // quad whenever the mismatch is within one physical pixel.
-        let allowed_clip_delta_px = if forced_geometry.is_some() {
-            1.01
-        } else {
-            0.01
-        };
+        // Only collapse exact matches back to the full draw quad. For forced
+        // slots we derive the clip from the physical destination rectangle
+        // above, so a 1 px mismatch is a real crop/extend request rather than
+        // rounding noise. Expanding it back to the surface is what made
+        // clipToRect leak or leave a moving 1 px seam near client min-size.
+        let allowed_clip_delta_px = 0.01;
         if clip_size_delta_px.0 <= allowed_clip_delta_px
             && clip_size_delta_px.1 <= allowed_clip_delta_px
         {
@@ -351,9 +362,10 @@ impl ClippedSurfaceElement {
             snapped_slot_rect.height = element_rect_logical.height;
         }
         let snapped_mask_rect = Self::align_mask_shared_edges_to_slot(
-            snapped_precise_logical_rect_in_element_space(
+            snapped_precise_logical_rect_for_element(
                 clip.mask_rect_precise,
                 element_rect_precise,
+                output_origin,
                 output_scale,
             ),
             clip.mask_rect_precise,
