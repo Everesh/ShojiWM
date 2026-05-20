@@ -44,8 +44,7 @@ use smithay::{
         background_effect::BackgroundEffectState,
         commit_timing::CommitTimingManagerState,
         compositor::{
-            BufferAssignment, CompositorClientState, CompositorState, Damage, SurfaceAttributes,
-            with_states,
+            CompositorClientState, CompositorState, Damage, SurfaceAttributes, with_states,
         },
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufGlobal, DmabufState},
@@ -2552,15 +2551,11 @@ impl ShojiWM {
                 .collect();
         }
 
-        let (damage_rects, buffer_changed) = with_states(surface, |states| {
+        let damage_rects = with_states(surface, |states| {
             let mut cached = states.cached_state.get::<SurfaceAttributes>();
             let attrs = cached.current();
             let buffer_scale = attrs.buffer_scale.max(1);
-            let buffer_changed = matches!(
-                attrs.buffer,
-                Some(BufferAssignment::NewBuffer(_) | BufferAssignment::Removed)
-            );
-            let damage_rects = attrs
+            attrs
                 .damage
                 .iter()
                 .map(|damage| match damage {
@@ -2580,14 +2575,10 @@ impl ShojiWM {
                             .div_euclid(buffer_scale),
                     ),
                 })
-                .collect::<Vec<_>>();
-            (damage_rects, buffer_changed)
+                .collect::<Vec<_>>()
         });
 
         if damage_rects.is_empty() {
-            if !buffer_changed {
-                return Vec::new();
-            }
             return self
                 .logical_damage_rect_for_window(window)
                 .into_iter()

@@ -360,26 +360,19 @@ impl CompositorHandler for ShojiWM {
                 );
             }
             self.window_commit_times.insert(window.clone(), commit_time);
-            let snapshot_changed = self
-                .window_decorations
-                .get(&window)
-                .is_none_or(|decoration| decoration.snapshot != snapshot);
-            let has_source_damage = !source_damage.is_empty();
-            if has_source_damage || snapshot_changed {
-                self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
-                self.window_source_damage
-                    .extend(
-                        source_damage
-                            .into_iter()
-                            .map(|rect| crate::state::OwnedDamageRect {
-                                owner: snapshot.id.clone(),
-                                rect,
-                            }),
-                    );
-                if let Some(decoration) = self.window_decorations.get(&window) {
-                    self.pending_decoration_damage
-                        .push(decoration.layout.root.rect);
-                }
+            self.snapshot_dirty_window_ids.insert(snapshot.id.clone());
+            self.window_source_damage
+                .extend(
+                    source_damage
+                        .into_iter()
+                        .map(|rect| crate::state::OwnedDamageRect {
+                            owner: snapshot.id.clone(),
+                            rect,
+                        }),
+                );
+            if let Some(decoration) = self.window_decorations.get(&window) {
+                self.pending_decoration_damage
+                    .push(decoration.layout.root.rect);
             }
             if let Some(top) = window.toplevel() {
                 debug!(surface = ?top.wl_surface().id(), "toplevel commit matched mapped window");
@@ -389,9 +382,7 @@ impl CompositorHandler for ShojiWM {
             // do *not* correspond to a mapped rendered surface intentionally fall through
             // without waking the renderer, which breaks the Firefox "non-presented root
             // surface wakes the compositor" loop.
-            if has_source_damage || snapshot_changed {
-                self.schedule_redraw();
-            }
+            self.schedule_redraw();
         }
 
         // `xdg_shell::handle_commit` schedules its own redraw for popup commits (both the
