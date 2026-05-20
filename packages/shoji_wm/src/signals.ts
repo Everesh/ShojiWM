@@ -50,10 +50,16 @@ abstract class BaseSignal<T> {
 
   protected notify(): void {
     trackSignalWrite(this);
-    for (const listener of this.listeners) {
+    // Snapshot before iterating: a dependent's markDirty may synchronously
+    // unsubscribe and re-subscribe (effects clear+rebuild their deps inside
+    // run()), which would move the element to the Set's tail and cause the
+    // for-of to re-visit it indefinitely. Same risk applies to listeners.
+    const listeners = Array.from(this.listeners);
+    for (const listener of listeners) {
       listener();
     }
-    for (const dependent of this.dependents) {
+    const dependents = Array.from(this.dependents);
+    for (const dependent of dependents) {
       dependent.markDirty();
     }
   }
@@ -142,7 +148,8 @@ class ComputedSignal<T> extends BaseSignal<T> implements ReactiveComputation {
       this.#initialized = true;
       this.#dirty = false;
       if (changed) {
-        for (const listener of this.listeners) {
+        const listeners = Array.from(this.listeners);
+        for (const listener of listeners) {
           listener();
         }
       }

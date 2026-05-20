@@ -26,6 +26,7 @@ import {
     createWindowState,
     createWindowStack,
 } from "shoji_wm";
+import { playRectAnimation } from "./window-manager";
 import type { CompositionRenderable, ManagedWindowRect, WindowPosition } from "shoji_wm/types";
 
 const NOCTALIA_SHELL_PATH = "/home/bea4dev/Documents/development/noctalia-shell-shojiwm";
@@ -67,6 +68,25 @@ WINDOW_MANAGER.key.bind("screenshot-freeze", "Super+Ctrl+P", () => {
     WINDOW_MANAGER.process.spawn({ command: "hyprshot -m region --freeze --raw | swappy -f -" });
 });
 
+let POINTER_POSITION = { x: 0, y: 0 };
+const ALL_WINDOWS = new Set<WaylandWindow>();
+WINDOW_MANAGER.key.bind("test", "Super+S", () => {
+    for (let window of ALL_WINDOWS) {
+        playRectAnimation(
+            window,
+            WINDOW_STATE_RECT,
+            { x: POINTER_POSITION.x, y: POINTER_POSITION.y, width: 700, height: 500 },
+            cubicBezier(0.1, 0.93, 0.1, 0.93),
+            seconds(0.7),
+        );
+    }
+});
+WINDOW_MANAGER.event.onPointerMoveAsync((event) => {
+    POINTER_POSITION = event.position;
+});
+WINDOW_MANAGER.event.onOpen((window) => {
+    ALL_WINDOWS.add(window);
+})
 
 WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     display["eDP-1"] = {
