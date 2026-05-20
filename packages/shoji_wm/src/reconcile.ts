@@ -397,7 +397,7 @@ function snapshotTransform(
   };
 }
 
-function shallowEqual(a: unknown, b: unknown): boolean {
+export function shallowEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) {
     return true;
   }

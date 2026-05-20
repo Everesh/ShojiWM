@@ -1,5 +1,6 @@
 import { signal, type Signal } from "./signals";
 import { createWindowAnimationController, type WindowAnimationController } from "./animation";
+import { shallowEqual } from "./reconcile";
 import { createWindowStateStore } from "./window-state";
 import type {
   WindowCompositionInteractionSnapshot,
@@ -183,6 +184,8 @@ export function createReactiveWindow(
     window,
     transform,
     update(nextSnapshot) {
+      // Primitive fields: WritableSignal.set's built-in Object.is check
+      // already suppresses spurious notifies when the value is unchanged.
       signals.id.value = nextSnapshot.id;
       signals.title.value = nextSnapshot.title;
       signals.appId.value = nextSnapshot.appId;
@@ -195,12 +198,25 @@ export function createReactiveWindow(
       signals.isMaximized.value = nextSnapshot.isMaximized;
       signals.isFullscreen.value = nextSnapshot.isFullscreen;
       signals.isXwayland.value = nextSnapshot.isXwayland;
-      signals.sizeConstraints.value = nextSnapshot.sizeConstraints;
       signals.isResizable.value = nextSnapshot.isResizable;
       signals.isTransient.value = nextSnapshot.isTransient;
       signals.parentId.value = nextSnapshot.parentId;
-      signals.icon.value = nextSnapshot.icon;
-      signals.interaction.value = nextSnapshot.interaction;
+      // Object fields: every snapshot from Rust deserializes to a *new*
+      // object reference with identical content. A naive write would
+      // therefore fail Object.is on every turn, fire notify, and re-mark
+      // the window dirty — which becomes a self-sustaining
+      // evaluate→handle.update→notify→dirty cycle (~250ms scheduler-tick
+      // cadence) once anything bootstraps it. Compare structurally before
+      // writing so identity-but-not-equality "changes" are squashed.
+      if (!shallowEqual(signals.sizeConstraints.peek(), nextSnapshot.sizeConstraints)) {
+        signals.sizeConstraints.value = nextSnapshot.sizeConstraints;
+      }
+      if (!shallowEqual(signals.icon.peek(), nextSnapshot.icon)) {
+        signals.icon.value = nextSnapshot.icon;
+      }
+      if (!shallowEqual(signals.interaction.peek(), nextSnapshot.interaction)) {
+        signals.interaction.value = nextSnapshot.interaction;
+      }
     },
     updateManagedWindow(state: ManagedWindowState) {
       managedRect = state.rect;
