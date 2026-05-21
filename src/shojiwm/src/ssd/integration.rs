@@ -141,6 +141,16 @@ pub struct WindowDecorationState {
     pub layout: ComputedDecorationTree,
     pub layout_scale: f64,
     pub client_rect: LogicalRect,
+    /// `client_rect` is the materialised result of
+    /// `managed_client_rect_for_state(tree, managed_window, _, layout_scale)`.
+    /// It's coherent with the cached state immediately after rebuild/relayout,
+    /// but the `runtime_dirty` branch can swap `tree`/`managed_window`/
+    /// `layout_scale` *without* rerunning the probe loop, so the materialised
+    /// rect lags by one tick. This flag records that lag so the per-refresh
+    /// diff check can skip the probe loop entirely while the cache is
+    /// coherent — which is the steady-state hot path (~25% CPU during
+    /// ufo-test).
+    pub client_rect_potentially_stale: bool,
     pub visual_transform: WindowTransform,
     pub managed_window: super::ManagedWindowState,
     pub window_effects: Option<super::WindowEffectConfig>,
@@ -1016,6 +1026,24 @@ impl ShojiWM {
                 .window_decorations
                 .get(&window)
                 .map(|cached| {
+                    // Fast path: when the cache is coherent
+                    // (`client_rect_potentially_stale == false`),
+                    // `managed_client_rect_for_state(cached.tree,
+                    // cached.managed_window, _, cached.layout_scale)` is
+                    // *by construction* equal to `cached.client_rect` — the
+                    // function's result for managed windows depends only on
+                    // `(tree, managed_window.rect, scale)`, all of which are
+                    // exactly the inputs the cached rect was derived from,
+                    // and for unmanaged windows the function returns the
+                    // fallback (which `snapshot_changed` would have caught
+                    // separately). Skipping it avoids the up-to-4-iteration
+                    // probe-layout loop per window per redraw, which was
+                    // the dominant CPU cost during heavy client commits
+                    // (ufo-test at 4K@120Hz: ~25% of CPU in the SSD layout
+                    // path).
+                    if !cached.client_rect_potentially_stale {
+                        return Ok(cached.client_rect);
+                    }
                     managed_client_rect_for_state(
                         &cached.tree,
                         &cached.managed_window,
@@ -1175,6 +1203,7 @@ impl ShojiWM {
                         layout,
                         layout_scale,
                         client_rect: layout_client_rect,
+                        client_rect_potentially_stale: false,
                         visual_transform: evaluation.transform,
                         managed_window: evaluation.managed_window,
                         window_effects: evaluation.window_effects,
@@ -1242,6 +1271,7 @@ impl ShojiWM {
                         transformed_root_rect(cached.layout.root.rect, evaluation.transform),
                     );
                     cached.client_rect = layout_client_rect;
+                    cached.client_rect_potentially_stale = false;
                     cached.snapshot = snapshot;
                     cached.visual_transform = evaluation.transform;
                     cached.managed_window = evaluation.managed_window;
@@ -1603,6 +1633,12 @@ impl ShojiWM {
                         &cached.buffers,
                     );
                     runtime_dirty_updates = runtime_dirty_updates.saturating_add(1);
+                    // The runtime-dirty branch swaps `tree` / `managed_window`
+                    // / `layout_scale` but leaves `client_rect` matching the
+                    // *previous* probe-loop result, so the diff check on the
+                    // next refresh has to recompute once to either confirm
+                    // or detect the divergence.
+                    cached.client_rect_potentially_stale = true;
                     self.schedule_redraw();
                     self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
                     animation_active_for_target |= evaluation.next_poll_in_ms == Some(0);
