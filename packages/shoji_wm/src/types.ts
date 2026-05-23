@@ -192,6 +192,7 @@ export interface ManagedWindowState {
   managed: boolean;
   rect?: WindowPosition;
   workspace?: string | number;
+  visibleOutputs?: string[] | null;
   visible: boolean;
   idle: boolean;
   interactive: boolean;
@@ -709,6 +710,7 @@ export interface ShaderEffectProps extends ComponentProps {
 export interface ManagedWindowProps extends ComponentProps {
   rect?: MaybeSignal<ManagedWindowRect>;
   workspace?: MaybeSignal<string | number>;
+  visibleOutputs?: MaybeSignal<string[] | null>;
   visible?: MaybeSignal<boolean>;
   idle?: MaybeSignal<boolean>;
   interactive?: MaybeSignal<boolean>;

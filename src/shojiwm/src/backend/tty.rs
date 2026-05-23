@@ -1269,10 +1269,9 @@ fn render_surface(
             else {
                 continue;
             };
-            if window_decorations
-                .get(window)
-                .is_some_and(|decoration| !decoration.managed_window_allows_render())
-            {
+            if window_decorations.get(window).is_some_and(|decoration| {
+                !decoration.managed_window_allows_render_on_output(output.name().as_str())
+            }) {
                 continue;
             }
             if closing_window_snapshots.contains_key(&window_id) {

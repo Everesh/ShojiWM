@@ -27,6 +27,8 @@ import {
     TITLEBAR_HEIGHT,
     WINDOW_BORDER_PX,
     WINDOW_STATE_MINIMIZED,
+    WINDOW_STATE_TILE_DRAGGING,
+    WINDOW_STATE_VISIBLE_OUTPUTS,
     WINDOW_STATE_WORKSPACE_OFFSET_Y,
     WINDOW_STATE_WORKSPACE_OPACITY,
     WINDOW_STATE_RECT,
@@ -173,11 +175,12 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
     const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
     const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
     const workspaceOpacity = window.state[WINDOW_STATE_WORKSPACE_OPACITY];
-    const opacity = computed(() => openVariable() * workspaceOpacity());
+    const tileDragging = window.state[WINDOW_STATE_TILE_DRAGGING];
+    const opacity = computed(() => openVariable() * (tileDragging() ? 1 : workspaceOpacity()));
     const translateY = openVariable(variable => (1 - variable) * 200);
     const rect = computed(() => {
         const base = window.state[WINDOW_STATE_RECT]();
-        const dy = translateY() + workspaceOffsetY();
+        const dy = translateY() + (tileDragging() ? 0 : workspaceOffsetY());
         return {
             x: base.x,
             y: base.y + dy,
@@ -187,7 +190,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
     });
     const forceRectSize = computed(() => window.isResizable() && !window.isTransient());
     const minimized = window.state[WINDOW_STATE_MINIMIZED];
-    const inactive = computed(() => minimized() || !workspaceVisible());
+    const inactive = computed(() => minimized() || (!workspaceVisible() && !tileDragging()));
 
     const borderColor = window.isFocused(focused => focused ? "#d7ba7d" : "#4f5666");
     const titlebarBackground = window.isFocused(focused => focused ? "#1f243080" : "#2a2f3a80");
@@ -288,6 +291,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
         <ManagedWindow
             rect={rect}
             zIndex={HYBRID_WINDOW_MANAGER.getWindowZIndex(window)}
+            visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
             forceRectSize={forceRectSize}
             idle={inactive}
             interactive={inactive(value => !value)}

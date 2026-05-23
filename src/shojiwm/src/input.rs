@@ -1294,7 +1294,7 @@ impl ShojiWM {
                 let snapshot = self.snapshot_window(window);
                 let location = self.space.element_location(window)?;
                 let local_pos = if let Some(decoration) = self.window_decorations.get(window) {
-                    if !decoration.managed_window_allows_input() {
+                    if !self.decoration_allows_input_at(decoration, pos) {
                         return None;
                     }
                     inverse_transform_point(

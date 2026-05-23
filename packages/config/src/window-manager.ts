@@ -23,6 +23,12 @@ export const WINDOW_STATE_WORKSPACE_OFFSET_Y = createWindowState<number>("worksp
 export const WINDOW_STATE_WORKSPACE_OPACITY = createWindowState<number>("workspaceOpacity", {
     default: 1,
 });
+export const WINDOW_STATE_TILE_DRAGGING = createWindowState<boolean>("tileDragging", {
+    default: false,
+});
+export const WINDOW_STATE_VISIBLE_OUTPUTS = createWindowState<string[] | null>("visibleOutputs", {
+    default: null,
+});
 export const WINDOW_STATE_FLOATING_RECT = createWindowState<ManagedWindowRect | null>("floatingRect", {
     default: null,
 });
@@ -34,6 +40,8 @@ const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);//cubicBezier(0
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
 export const TILE_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
+const TILE_DRAG_WORKSPACE_EDGE_PX = 80;
+const TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS = 420;
 const TILE_GAP = 12;
 const TILE_MARGIN = 12;
 const TILE_WIDTH_RATIO = 0.5;
@@ -55,6 +63,11 @@ export class HybridWindowManager {
     private readonly naturalRootRect: (rect: WaylandWindow) => ManagedWindowRect;
     private currentMonitor: string;
     private isGrabbing = false;
+    private tileDrag: {
+        window: WaylandWindow;
+        workspace: Workspace;
+        lastWorkspaceSwitchAt: number;
+    } | null = null;
 
     public constructor(naturalRootRect: (rect: WaylandWindow) => ManagedWindowRect) {
         this.currentMonitor = "";
@@ -151,6 +164,7 @@ export class HybridWindowManager {
     public onWindowMove(event: WindowMoveEvent) {
         const workspace = this.findWorkspaceForWindow(event.window);
         if (workspace?.isTiled && workspace.shouldTile(event.window)) {
+            this.onTileWindowMove(event, workspace);
             return;
         }
 
@@ -193,6 +207,42 @@ export class HybridWindowManager {
         if (event.phase === "end" || event.phase === "cancel") {
             this.isGrabbing = false;
         }
+    }
+
+    private onTileWindowMove(event: WindowMoveEvent, workspace: Workspace) {
+        const window = event.window;
+        if (event.phase === "start" || !this.tileDrag || this.tileDrag.window.id !== window.id) {
+            this.isGrabbing = true;
+            workspace.beginTileDrag(window, event.currentRect);
+            this.tileDrag = {
+                window,
+                workspace,
+                lastWorkspaceSwitchAt: event.timestamp,
+            };
+        }
+
+        const drag = this.tileDrag;
+        if (!drag) {
+            return;
+        }
+
+        if (event.phase === "end" || event.phase === "cancel") {
+            drag.workspace.endTileDrag(window, event.phase === "cancel");
+            this.tileDrag = null;
+            this.isGrabbing = false;
+            return;
+        }
+
+        let targetWorkspace = this.workspaceForTileDrag(event, drag);
+        if (targetWorkspace !== drag.workspace) {
+            drag.workspace.removeTileDragWindow(window);
+            drag.workspace.applyLayout();
+            targetWorkspace.adoptTileDragWindow(window, event.currentRect);
+            drag.workspace = targetWorkspace;
+            this.syncWorkspaceVisibility();
+        }
+
+        targetWorkspace.updateTileDrag(window, event.currentRect, event.currentPointer.x);
     }
 
     public onWindowMaximizeRequest(event: WindowMaximizeRequestEvent) {
@@ -417,18 +467,68 @@ export class HybridWindowManager {
         return undefined;
     }
 
+    private workspaceForTileDrag(event: WindowMoveEvent, drag: NonNullable<HybridWindowManager["tileDrag"]>): Workspace {
+        const monitor = event.outputName && WINDOW_MANAGER.output.list.includes(event.outputName)
+            ? event.outputName
+            : drag.workspace.monitor;
+        let index = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
+        const edgeDirection = this.tileDragWorkspaceEdgeDirection(monitor, event.currentPointer.y);
+
+        if (
+            edgeDirection !== 0 &&
+            event.timestamp - drag.lastWorkspaceSwitchAt >= TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS
+        ) {
+            const nextIndex = Math.max(1, index + edgeDirection);
+            if (nextIndex !== index) {
+                this.currentMonitor = monitor;
+                this.switchWorkspace(edgeDirection);
+                drag.lastWorkspaceSwitchAt = event.timestamp;
+                index = this.activeWorkspaceByMonitor.get(monitor) ?? nextIndex;
+            }
+        }
+
+        return this.ensureWorkspace(monitor, index);
+    }
+
+    private tileDragWorkspaceEdgeDirection(monitor: string, y: number): -1 | 0 | 1 {
+        const rect = this.workspaceViewportRect(monitor);
+        const top = read(rect.y);
+        const height = read(rect.height);
+        if (y < top + TILE_DRAG_WORKSPACE_EDGE_PX) {
+            return -1;
+        }
+        if (y > top + height - TILE_DRAG_WORKSPACE_EDGE_PX) {
+            return 1;
+        }
+        return 0;
+    }
+
     private workspaceTransitionDistance(monitor: string): number {
+        return read(this.workspaceViewportRect(monitor).height);
+    }
+
+    private workspaceViewportRect(monitor: string): ManagedWindowRect {
         const usable = WINDOW_MANAGER.layer.usableArea(monitor);
         if (usable) {
-            return usable.height;
+            return usable;
         }
 
         const output = WINDOW_MANAGER.output.current[monitor];
         if (output?.resolution) {
-            return output.resolution.height / output.scale;
+            return {
+                x: output.position.x,
+                y: output.position.y,
+                width: output.resolution.width / output.scale,
+                height: output.resolution.height / output.scale,
+            };
         }
 
-        return 720;
+        return {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+        };
     }
 
     private constrainResizeRect(event: WindowResizeEvent): ManagedWindowRect {
@@ -546,6 +646,7 @@ export class Workspace {
     private readonly tileWidthByWindowId = new Map<string, number>();
     private activeWindowId: string | null = null;
     private visibilityAnimationToken = 0;
+    private draggingWindowId: string | null = null;
     private scrollOffset = 0;
     public readonly monitor: string;
     public isTiled = false;
@@ -574,6 +675,7 @@ export class Workspace {
         window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
         window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
         window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
+        this.syncWindowVisibleOutputs(window);
 
         if (!WINDOW_MANAGER.output.list.includes(this.monitor)) {
             return;
@@ -595,6 +697,10 @@ export class Workspace {
         if (index >= 0) {
             this.windows.splice(index, 1);
             this.tileWidthByWindowId.delete(window.id);
+            if (this.draggingWindowId === window.id) {
+                this.draggingWindowId = null;
+                window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
+            }
             let nextFocus: WaylandWindow | null = null;
             if (this.activeWindowId === window.id) {
                 nextFocus = this.tileableWindows()[Math.min(index, this.tileableWindows().length - 1)] ?? null;
@@ -603,6 +709,15 @@ export class Workspace {
             return nextFocus;
         }
         return undefined;
+    }
+
+    public removeTileDragWindow(window: WaylandWindow) {
+        const index = this.windows.findIndex((current) => current.id === window.id);
+        if (index < 0) {
+            return;
+        }
+        this.windows.splice(index, 1);
+        this.draggingWindowId = null;
     }
 
     public hasWindow(window: WaylandWindow): boolean {
@@ -616,6 +731,13 @@ export class Workspace {
     public setVisible(visible: boolean) {
         this.visibilityAnimationToken += 1;
         for (const window of this.windows) {
+            this.syncWindowVisibleOutputs(window);
+            if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
+                window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+                window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+                window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
+                continue;
+            }
             window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(visible);
             window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
             window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
@@ -625,6 +747,13 @@ export class Workspace {
     public prepareWorkspaceTransition(offsetY: number, opacity: number) {
         this.visibilityAnimationToken += 1;
         for (const window of this.windows) {
+            this.syncWindowVisibleOutputs(window);
+            if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
+                window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+                window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+                window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
+                continue;
+            }
             window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
             window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(offsetY);
             window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(opacity);
@@ -642,6 +771,13 @@ export class Workspace {
         this.visibilityAnimationToken = token;
 
         for (const window of this.windows) {
+            this.syncWindowVisibleOutputs(window);
+            if (window.state[WINDOW_STATE_TILE_DRAGGING]()) {
+                window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+                window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+                window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
+                continue;
+            }
             window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
             playNumberStateAnimation(
                 window,
@@ -702,6 +838,7 @@ export class Workspace {
                 playRectAnimation(window, WINDOW_STATE_RECT, rect, WINDOW_MANAGEMENT_EASING, WINDOW_MANAGEMENT_ANIMATION_DURATION);
             }
             window.state[WINDOW_STATE_FLOATING_RECT].set(null);
+            this.syncWindowVisibleOutputs(window);
         }
         if (focusedTileableWindow) {
             this.activeWindowId = focusedTileableWindow.id;
@@ -740,13 +877,15 @@ export class Workspace {
                     width: tileWidth,
                     height: tileHeight,
                 };
-            playRectAnimation(
-                window,
-                WINDOW_STATE_RECT,
-                rect,
-                WINDOW_MANAGEMENT_EASING,
-                TILE_ANIMATION_DURATION,
-            );
+            if (window.id !== this.draggingWindowId) {
+                playRectAnimation(
+                    window,
+                    WINDOW_STATE_RECT,
+                    rect,
+                    WINDOW_MANAGEMENT_EASING,
+                    TILE_ANIMATION_DURATION,
+                );
+            }
             nextX += tileWidth + (index === tileable.length - 1 ? 0 : TILE_GAP);
         });
     }
@@ -767,6 +906,72 @@ export class Workspace {
         this.tileWidthByWindowId.set(event.window.id, width);
         this.scrollToWindow(event.window);
         this.applyLayout();
+    }
+
+    public beginTileDrag(window: WaylandWindow, rect: ManagedWindowRect) {
+        if (!this.shouldTile(window)) {
+            return;
+        }
+        this.activeWindowId = window.id;
+        this.draggingWindowId = window.id;
+        window.state[WINDOW_STATE_MAXIMIZED].set(false);
+        window.state[WINDOW_STATE_TILE_DRAGGING].set(true);
+        this.syncWindowVisibleOutputs(window);
+        window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(1);
+        this.setTileWidthFromRect(window, window.state[WINDOW_STATE_RECT](), false);
+        stopRectAnimation(window, WINDOW_STATE_RECT);
+        window.state[WINDOW_STATE_RECT].set(rect);
+        this.applyLayout();
+    }
+
+    public adoptTileDragWindow(window: WaylandWindow, rect: ManagedWindowRect) {
+        if (!this.hasWindow(window)) {
+            this.windows.push(window);
+        }
+        const visible = this.isActive();
+        this.activeWindowId = window.id;
+        this.draggingWindowId = window.id;
+        this.setTileWidthFromRect(window, rect, false);
+        window.state[WINDOW_STATE_TILE_DRAGGING].set(true);
+        this.syncWindowVisibleOutputs(window);
+        window.state[WINDOW_STATE_WORKSPACE_VISIBLE].set(true);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
+        stopRectAnimation(window, WINDOW_STATE_RECT);
+        window.state[WINDOW_STATE_RECT].set(rect);
+    }
+
+    public updateTileDrag(window: WaylandWindow, rect: ManagedWindowRect, pointerX: number) {
+        if (this.draggingWindowId !== window.id) {
+            this.beginTileDrag(window, rect);
+        }
+        this.activeWindowId = window.id;
+        this.moveTileWindowToIndex(window, this.tileInsertionIndexForPointer(window, pointerX));
+        stopRectAnimation(window, WINDOW_STATE_RECT);
+        window.state[WINDOW_STATE_RECT].set(rect);
+        this.scrollToWindow(window);
+        this.applyLayout();
+    }
+
+    public endTileDrag(window: WaylandWindow, cancelled: boolean) {
+        if (this.draggingWindowId !== window.id) {
+            return;
+        }
+        this.draggingWindowId = null;
+        window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
+        this.syncWindowVisibleOutputs(window);
+        window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y].set(0);
+        window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(this.isActive() ? 1 : 0);
+        if (!cancelled) {
+            this.activeWindowId = window.id;
+            this.scrollToWindow(window);
+        }
+        this.applyLayout();
+        if (!cancelled && this.isActive()) {
+            window.focus();
+        }
     }
 
     public focusWindow(window: WaylandWindow) {
@@ -807,6 +1012,14 @@ export class Workspace {
         return Array.from(this.windows);
     }
 
+    private syncWindowVisibleOutputs(window: WaylandWindow) {
+        window.state[WINDOW_STATE_VISIBLE_OUTPUTS].set(
+            this.isTiled && !window.state[WINDOW_STATE_TILE_DRAGGING]()
+                ? [this.monitor]
+                : null,
+        );
+    }
+
     private tileableWindows(): WaylandWindow[] {
         return this.windows.filter((window) => this.shouldTile(window) && !window.state[WINDOW_STATE_MINIMIZED]());
     }
@@ -817,6 +1030,48 @@ export class Workspace {
 
     private activeWindow(windows = this.windows): WaylandWindow | undefined {
         return windows.find((window) => window.id === this.activeWindowId);
+    }
+
+    private tileInsertionIndexForPointer(window: WaylandWindow, pointerX: number): number {
+        const tileable = this.tileableWindows().filter((current) => current.id !== window.id);
+        const viewportRect = this.tileViewportRect();
+        const contentX = pointerX - read(viewportRect.x) + this.scrollOffset;
+        let left = 0;
+
+        for (let index = 0; index < tileable.length; index++) {
+            const width = this.tileWidthForWindow(tileable[index], viewportRect);
+            if (contentX < left + width / 2) {
+                return index;
+            }
+            left += width + TILE_GAP;
+        }
+
+        return tileable.length;
+    }
+
+    private moveTileWindowToIndex(window: WaylandWindow, tileIndex: number) {
+        const currentIndex = this.windows.findIndex((current) => current.id === window.id);
+        if (currentIndex < 0) {
+            return;
+        }
+
+        this.windows.splice(currentIndex, 1);
+        const tileableWithoutWindow = this.tileableWindows();
+        const beforeWindow = tileableWithoutWindow[tileIndex];
+
+        if (beforeWindow) {
+            const insertIndex = this.windows.findIndex((current) => current.id === beforeWindow.id);
+            this.windows.splice(Math.max(0, insertIndex), 0, window);
+            return;
+        }
+
+        let lastTileableIndex = -1;
+        for (let index = 0; index < this.windows.length; index++) {
+            if (this.shouldTile(this.windows[index])) {
+                lastTileableIndex = index;
+            }
+        }
+        this.windows.splice(lastTileableIndex + 1, 0, window);
     }
 
     private captureFloatingRect(window: WaylandWindow) {

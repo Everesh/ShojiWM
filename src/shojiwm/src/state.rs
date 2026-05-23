@@ -1883,7 +1883,7 @@ impl ShojiWM {
             };
 
             if let Some(decoration) = self.window_decorations.get(window) {
-                if !decoration.managed_window_allows_input() {
+                if !self.decoration_allows_input_at(decoration, pos) {
                     continue;
                 }
                 let local_pos = inverse_transform_point(
@@ -1957,7 +1957,7 @@ impl ShojiWM {
             };
 
             if let Some(decoration) = self.window_decorations.get(window) {
-                if !decoration.managed_window_allows_input() {
+                if !self.decoration_allows_input_at(decoration, pos) {
                     continue;
                 }
                 let local_pos = inverse_transform_point(
@@ -2077,9 +2077,10 @@ impl ShojiWM {
         &self,
         logical_pos: LogicalPoint,
     ) -> Option<(&Window, &WindowDecorationState)> {
+        let pos = Point::<f64, Logical>::from((f64::from(logical_pos.x), f64::from(logical_pos.y)));
         self.windows_top_to_bottom().into_iter().find_map(|window| {
             let decoration = self.window_decorations.get(window)?;
-            if !decoration.managed_window_allows_input() {
+            if !self.decoration_allows_input_at(decoration, pos) {
                 return None;
             }
             let transformed_root =
@@ -2091,9 +2092,10 @@ impl ShojiWM {
     }
 
     pub fn raw_window_under(&self, logical_pos: LogicalPoint) -> Option<(&Window, LogicalRect)> {
+        let pos = Point::<f64, Logical>::from((f64::from(logical_pos.x), f64::from(logical_pos.y)));
         self.windows_top_to_bottom().into_iter().find_map(|window| {
             if let Some(decoration) = self.window_decorations.get(window)
-                && !decoration.managed_window_allows_input()
+                && !self.decoration_allows_input_at(decoration, pos)
             {
                 return None;
             }
@@ -2149,12 +2151,16 @@ impl ShojiWM {
         let Some(output_geo) = self.space.output_geometry(output) else {
             return false;
         };
+        let output_name = output.name();
 
         if let Some(decoration) = self
             .window_decorations
             .get(window)
             .filter(|decoration| decoration.managed_window.managed)
         {
+            if !decoration.managed_window_allows_render_on_output(output_name.as_str()) {
+                return false;
+            }
             let rect =
                 transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
             return logical_rect_intersects_output(rect, output_geo);
@@ -2568,6 +2574,26 @@ impl ShojiWM {
         self.window_decorations
             .get(window)
             .is_none_or(|decoration| decoration.managed_window_allows_render())
+    }
+
+    pub(crate) fn output_name_at_point(&self, pos: Point<f64, Logical>) -> Option<String> {
+        self.space.outputs().find_map(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+                .then(|| output.name())
+        })
+    }
+
+    pub(crate) fn decoration_allows_input_at(
+        &self,
+        decoration: &WindowDecorationState,
+        pos: Point<f64, Logical>,
+    ) -> bool {
+        let Some(output_name) = self.output_name_at_point(pos) else {
+            return decoration.managed_window_allows_input();
+        };
+        decoration.managed_window_allows_input_on_output(output_name.as_str())
     }
 
     pub fn logical_source_damage_rects_for_surface(

@@ -193,8 +193,21 @@ impl WindowDecorationState {
         !self.managed_window.managed || (self.managed_window.visible && !self.managed_window.idle)
     }
 
+    pub fn managed_window_allows_render_on_output(&self, output_name: &str) -> bool {
+        self.managed_window_allows_render()
+            && self
+                .managed_window
+                .visible_outputs
+                .as_ref()
+                .is_none_or(|outputs| outputs.iter().any(|output| output == output_name))
+    }
+
     pub fn managed_window_allows_input(&self) -> bool {
         self.managed_window_allows_render() && self.managed_window.interactive
+    }
+
+    pub fn managed_window_allows_input_on_output(&self, output_name: &str) -> bool {
+        self.managed_window_allows_render_on_output(output_name) && self.managed_window.interactive
     }
 }
 
@@ -2292,9 +2305,13 @@ impl ShojiWM {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, DecorationHitTestResult)> {
+        let output_name = self.output_name_at_point(point);
         self.windows_top_to_bottom().into_iter().find_map(|window| {
             let decoration = self.window_decorations.get(window)?;
-            if !decoration.managed_window_allows_input() {
+            if !output_name.as_deref().map_or_else(
+                || decoration.managed_window_allows_input(),
+                |output| decoration.managed_window_allows_input_on_output(output),
+            ) {
                 return None;
             }
             let logical_point = LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32);
@@ -2315,9 +2332,13 @@ impl ShojiWM {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, super::DecorationInteractionTarget)> {
+        let output_name = self.output_name_at_point(point);
         self.windows_top_to_bottom().into_iter().find_map(|window| {
             let decoration = self.window_decorations.get(window)?;
-            if !decoration.managed_window_allows_input() {
+            if !output_name.as_deref().map_or_else(
+                || decoration.managed_window_allows_input(),
+                |output| decoration.managed_window_allows_input_on_output(output),
+            ) {
                 return None;
             }
             let logical_point = LogicalPoint::new(point.x.floor() as i32, point.y.floor() as i32);

@@ -325,6 +325,7 @@ function snapshotManagedWindow(
     managed: props !== undefined,
     rect: props?.rect === undefined ? undefined : snapshotManagedWindowRect(read(props.rect)),
     workspace: props?.workspace === undefined ? undefined : read(props.workspace),
+    visibleOutputs: props?.visibleOutputs === undefined ? undefined : snapshotManagedWindowVisibleOutputs(read(props.visibleOutputs)),
     visible,
     idle,
     interactive: props?.interactive === undefined ? true : read(props.interactive),
@@ -335,6 +336,14 @@ function snapshotManagedWindow(
       opacity: visible && !idle ? opacity : 0,
     },
   };
+}
+
+function snapshotManagedWindowVisibleOutputs(outputs: readonly string[] | null): string[] | null {
+  if (outputs === null) {
+    return null;
+  }
+
+  return Array.from(new Set(outputs));
 }
 
 function snapshotManagedWindowRect(rect: ManagedWindowRect): WindowPosition {

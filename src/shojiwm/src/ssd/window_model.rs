@@ -376,6 +376,8 @@ pub struct ManagedWindowState {
     pub managed: bool,
     pub rect: Option<ManagedWindowRectSnapshot>,
     pub workspace: Option<serde_json::Value>,
+    #[serde(default, rename = "visibleOutputs")]
+    pub visible_outputs: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub visible: bool,
     #[serde(default)]
@@ -396,6 +398,7 @@ impl Default for ManagedWindowState {
             rect: None,
             managed: false,
             workspace: None,
+            visible_outputs: None,
             visible: true,
             idle: false,
             interactive: true,

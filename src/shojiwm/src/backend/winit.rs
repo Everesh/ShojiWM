@@ -272,7 +272,10 @@ pub fn init_winit(
                             if state
                                 .window_decorations
                                 .get(window)
-                                .is_some_and(|decoration| !decoration.managed_window_allows_render())
+                                .is_some_and(|decoration| {
+                                    !decoration
+                                        .managed_window_allows_render_on_output(output.name().as_str())
+                                })
                             {
                                 continue;
                             }
