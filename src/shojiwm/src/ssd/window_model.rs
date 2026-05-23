@@ -416,6 +416,7 @@ pub enum WaylandWindowAction {
     Close,
     FinalizeClose,
     Maximize,
+    Unmaximize,
     Minimize,
     Focus,
 }
@@ -780,6 +781,8 @@ mod tests {
             .expect("serialize finalize close");
         let maximize =
             serde_json::to_string(&WaylandWindowAction::Maximize).expect("serialize maximize");
+        let unmaximize =
+            serde_json::to_string(&WaylandWindowAction::Unmaximize).expect("serialize unmaximize");
         let minimize =
             serde_json::to_string(&WaylandWindowAction::Minimize).expect("serialize minimize");
         let focus = serde_json::to_string(&WaylandWindowAction::Focus).expect("serialize focus");
@@ -787,6 +790,7 @@ mod tests {
         assert_eq!(close, "\"close\"");
         assert_eq!(finalize_close, "\"finalizeClose\"");
         assert_eq!(maximize, "\"maximize\"");
+        assert_eq!(unmaximize, "\"unmaximize\"");
         assert_eq!(minimize, "\"minimize\"");
         assert_eq!(focus, "\"focus\"");
     }

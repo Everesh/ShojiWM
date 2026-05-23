@@ -80,18 +80,24 @@ void main() {
         shape_alpha *= clip_alpha;
     }
 
+    // Smithay's GLES renderer composites custom pixel shaders as premultiplied alpha.
+    // Keep the color's own alpha (#RRGGBBAA) and element opacity in the RGB channels too;
+    // otherwise very transparent light colors render as bright/opaque halos.
+    float final_alpha = color.a * alpha;
+    vec4 premultiplied_color = vec4(color.rgb * final_alpha, final_alpha);
+
     if (debug_inner_only > 0.5) {
-        gl_FragColor = color * alpha * debug_inner_alpha;
+        gl_FragColor = premultiplied_color * debug_inner_alpha;
         return;
     }
     if (debug_clip_only > 0.5) {
-        gl_FragColor = color * alpha * debug_clip_alpha;
+        gl_FragColor = premultiplied_color * debug_clip_alpha;
         return;
     }
     if (debug_shell_only > 0.5) {
-        gl_FragColor = color * alpha * max(debug_outer_alpha - debug_inner_alpha, 0.0);
+        gl_FragColor = premultiplied_color * max(debug_outer_alpha - debug_inner_alpha, 0.0);
         return;
     }
 
-    gl_FragColor = color * alpha * shape_alpha;
+    gl_FragColor = premultiplied_color * shape_alpha;
 }

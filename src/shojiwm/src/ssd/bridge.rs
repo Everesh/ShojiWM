@@ -286,6 +286,7 @@ pub struct WireBorderValue {
 pub enum WireWindowAction {
     Close,
     Maximize,
+    Unmaximize,
     Minimize,
 }
 
@@ -930,6 +931,7 @@ impl From<WireWindowAction> for WindowAction {
         match value {
             WireWindowAction::Close => WindowAction::Close,
             WireWindowAction::Maximize => WindowAction::Maximize,
+            WireWindowAction::Unmaximize => WindowAction::Unmaximize,
             WireWindowAction::Minimize => WindowAction::Minimize,
         }
     }

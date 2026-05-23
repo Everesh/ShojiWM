@@ -68,6 +68,7 @@ import {
   type RuntimeEventConfig,
   updateOutputState,
   updateLayerSnapshots,
+  WINDOW_MANAGER,
   type WaylandLayerSnapshot,
   type WaylandLayer,
   type WaylandWindowActions,
@@ -281,7 +282,7 @@ interface WindowClosedSuccess {
 
 interface RuntimeWindowAction {
   windowId: string;
-  action: "close" | "finalizeClose" | "maximize" | "minimize" | "focus";
+  action: "close" | "finalizeClose" | "maximize" | "unmaximize" | "minimize" | "focus";
 }
 
 interface InvokeHandlerSuccess {
@@ -1271,6 +1272,9 @@ function createRuntimeCacheEntry(
     maximize() {
       entry.pendingActions.push({ windowId: latestSnapshot.id, action: "maximize" });
     },
+    unmaximize() {
+      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "unmaximize" });
+    },
     minimize() {
       entry.pendingActions.push({ windowId: latestSnapshot.id, action: "minimize" });
     },
@@ -2012,16 +2016,16 @@ function drainPendingActions(): RuntimeWindowAction[] {
 function resolveComposition(
   loaded: Record<string, unknown>,
 ): WindowCompositionFunction {
-  type WindowSlot = { composition?: WindowCompositionFunction };
+  type WindowSlot = { composition?: WindowCompositionFunction | null };
   type WmSlot = { window?: WindowSlot };
   const maybeComposition =
-    (loaded.WINDOW_MANAGER as WmSlot | undefined)?.window?.composition ??
+    WINDOW_MANAGER.window.composition ??
     (loaded.default as WmSlot | undefined)?.window?.composition ??
     (loaded.composition as WindowCompositionFunction | undefined);
 
   if (!maybeComposition) {
     throw new Error(
-      "config module did not export WINDOW_MANAGER.window.composition",
+      "config did not assign WINDOW_MANAGER.window.composition",
     );
   }
 
@@ -2032,12 +2036,12 @@ function resolveEvents(
   loaded: Record<string, unknown>,
 ): WindowManagerEventController {
   const maybeEvents =
-    (loaded.WINDOW_MANAGER as { event?: WindowManagerEventController } | undefined)?.event ??
+    WINDOW_MANAGER.event ??
     (loaded.default as { event?: WindowManagerEventController } | undefined)?.event;
 
   if (!maybeEvents) {
     throw new Error(
-      "config module did not export WINDOW_MANAGER.event",
+      "config did not initialize WINDOW_MANAGER.event",
     );
   }
 
@@ -2046,11 +2050,7 @@ function resolveEvents(
 
 function resolveEffectConfig(loaded: Record<string, unknown>): RuntimeEffectConfig {
   const maybeEffect =
-    (loaded.WINDOW_MANAGER as { effect?: {
-      background_effect?: CompiledEffectHandle | null;
-      window?: RuntimeEffectConfig["window"];
-    } } | undefined)
-      ?.effect ??
+    WINDOW_MANAGER.effect ??
     (loaded.default as { effect?: {
       background_effect?: CompiledEffectHandle | null;
       window?: RuntimeEffectConfig["window"];

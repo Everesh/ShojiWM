@@ -173,6 +173,7 @@ export function createReactiveWindow(
     signals,
     close: actions.close,
     maximize: actions.maximize,
+    unmaximize: actions.unmaximize,
     minimize: actions.minimize,
     focus: actions.focus,
     setCloseAnimationDuration: actions.setCloseAnimationDuration,

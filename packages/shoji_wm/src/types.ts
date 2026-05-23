@@ -111,6 +111,7 @@ export interface WaylandWindow {
   readonly interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
   close(): void;
   maximize(): void;
+  unmaximize(): void;
   minimize(): void;
   focus(): void;
   setCloseAnimationDuration(durationMs: number): void;
@@ -822,6 +823,7 @@ export interface ReactiveWaylandLayer extends WaylandLayer {
 export interface WaylandWindowActions {
   close(): void;
   maximize(): void;
+  unmaximize(): void;
   minimize(): void;
   focus(): void;
   setCloseAnimationDuration(durationMs: number): void;
@@ -861,7 +863,7 @@ export interface ReactiveWaylandLayerHandle {
   update(snapshot: WaylandLayerSnapshot): void;
 }
 
-export type WindowActionType = "close" | "maximize" | "minimize";
+export type WindowActionType = "close" | "maximize" | "unmaximize" | "minimize";
 
 export interface WindowActionDescriptor {
   kind: "window-action";

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import {
   createCompositionEvaluationCache,
   installAssetResolverBridge,
+  WINDOW_MANAGER,
   type WindowCompositionFunction,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
@@ -64,6 +65,9 @@ async function main() {
     maximize() {
       console.log("[runtime] maximize() requested");
     },
+    unmaximize() {
+      console.log("[runtime] unmaximize() requested");
+    },
     minimize() {
       console.log("[runtime] minimize() requested");
     },
@@ -87,16 +91,16 @@ async function main() {
 function resolveComposition(
   loaded: Record<string, unknown>,
 ): WindowCompositionFunction {
-  type WindowSlot = { composition?: WindowCompositionFunction };
+  type WindowSlot = { composition?: WindowCompositionFunction | null };
   type WmSlot = { window?: WindowSlot };
   const maybeComposition =
-    (loaded.WINDOW_MANAGER as WmSlot | undefined)?.window?.composition ??
+    WINDOW_MANAGER.window.composition ??
     (loaded.default as WmSlot | undefined)?.window?.composition ??
     (loaded.composition as WindowCompositionFunction | undefined);
 
   if (!maybeComposition) {
     throw new Error(
-      "config module did not export WINDOW_MANAGER.window.composition",
+      "config did not assign WINDOW_MANAGER.window.composition",
     );
   }
 

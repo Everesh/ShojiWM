@@ -820,6 +820,7 @@ impl CompiledEffect {
 pub enum WindowAction {
     Close,
     Maximize,
+    Unmaximize,
     Minimize,
     RuntimeHandler(String),
 }

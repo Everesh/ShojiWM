@@ -521,6 +521,54 @@ impl ShojiWM {
                                     toplevel.send_close();
                                 }
                             }
+                            DecorationHitTestResult::Action(WindowAction::Maximize) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+                                self.request_window_maximize(
+                                    &window,
+                                    true,
+                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                                );
+                            }
+                            DecorationHitTestResult::Action(WindowAction::Unmaximize) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+                                self.request_window_maximize(
+                                    &window,
+                                    false,
+                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                                );
+                            }
+                            DecorationHitTestResult::Action(WindowAction::Minimize) => {
+                                pointer.button(
+                                    self,
+                                    &ButtonEvent {
+                                        button,
+                                        state: button_state,
+                                        serial,
+                                        time: event.time_msec(),
+                                    },
+                                );
+                                self.request_window_minimize(
+                                    &window,
+                                    true,
+                                    crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                                );
+                            }
                             DecorationHitTestResult::Action(WindowAction::RuntimeHandler(
                                 handler_id,
                             )) => {
@@ -574,17 +622,6 @@ impl ShojiWM {
                                         self.schedule_redraw();
                                     }
                                 }
-                            }
-                            DecorationHitTestResult::Action(_) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
-                                );
                             }
                             DecorationHitTestResult::Move => {
                                 pointer.button(
@@ -865,6 +902,13 @@ impl ShojiWM {
                     self.request_window_maximize(
                         &window,
                         true,
+                        crate::ssd::WindowStateRequestSourceSnapshot::Api,
+                    );
+                }
+                crate::ssd::WaylandWindowAction::Unmaximize => {
+                    self.request_window_maximize(
+                        &window,
+                        false,
                         crate::ssd::WindowStateRequestSourceSnapshot::Api,
                     );
                 }
