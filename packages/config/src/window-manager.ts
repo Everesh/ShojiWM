@@ -22,14 +22,15 @@ export const WINDOW_STATE_FLOATING_RECT = createWindowState<ManagedWindowRect | 
 });
 
 const OPEN_CLOSE_ANIMATION_DURATION = seconds(0.5);
-const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.5);
+const WINDOW_MANAGEMENT_ANIMATION_DURATION = seconds(0.3);
 const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
-const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
+const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);//cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
-const TILE_ANIMATION_DURATION = seconds(0.28);
+export const TILE_ANIMATION_DURATION = seconds(0.5);
 const TILE_GAP = 12;
 const TILE_MARGIN = 12;
 const TILE_WIDTH_RATIO = 0.5;
+const TILE_MIN_WIDTH = 240;
 export const OPEN_ANIMATION = animationVariable("window.open");
 export const WINDOW_BORDER_PX = 2;
 export const TITLEBAR_HEIGHT = 30;
@@ -93,12 +94,22 @@ export class HybridWindowManager {
             to: 0,
             easing: WINDOW_CLOSE_EASING,
         });
+
+        for (const workspace of this.workspaces.values()) {
+            const nextFocus = workspace.removeWindow(window);
+            if (nextFocus !== undefined) {
+                workspace.applyLayout();
+                nextFocus?.focus();
+                break;
+            }
+        }
+        this.syncWorkspaceVisibility();
     }
 
     public onClose(window: WaylandWindow) {
         this.windowStack.remove(window);
         for (const workspace of this.workspaces.values()) {
-            if (workspace.removeWindow(window)) {
+            if (workspace.removeWindow(window) !== undefined) {
                 workspace.applyLayout();
             }
         }
@@ -116,8 +127,13 @@ export class HybridWindowManager {
     }
 
     public onWindowResize(event: WindowResizeEvent) {
+        if (!read(event.window.isResizable)) {
+            return;
+        }
+
         const workspace = this.findWorkspaceForWindow(event.window);
         if (workspace?.isTiled && workspace.shouldTile(event.window)) {
+            workspace.resizeTile(event);
             return;
         }
 
@@ -174,16 +190,28 @@ export class HybridWindowManager {
 
     public onWindowMaximizeRequest(event: WindowMaximizeRequestEvent) {
         const workspace = this.findWorkspaceForWindow(event.window);
-        if (workspace?.isTiled && workspace.shouldTile(event.window)) {
-            return;
-        }
-
         if (this.isGrabbing) {
             return;
         }
 
         const window = event.window;
         window.state[WINDOW_STATE_MINIMIZED].set(false);
+
+        if (workspace?.isTiled && workspace.shouldTile(window)) {
+            if (!event.maximized) {
+                window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+                window.state[WINDOW_STATE_MAXIMIZED].set(false);
+                workspace.applyLayout();
+                return;
+            }
+
+            window.state[WINDOW_STATE_RESTORE_RECT].set(null);
+            window.state[WINDOW_STATE_MAXIMIZED].set(true);
+            workspace.focusWindow(window);
+            workspace.applyLayout();
+            window.focus();
+            return;
+        }
 
         if (!event.maximized) {
             const restoreRect = window.state[WINDOW_STATE_RESTORE_RECT]();
@@ -297,7 +325,13 @@ export class HybridWindowManager {
         const key = workspaceKey(monitor, index);
         let workspace = this.workspaces.get(key);
         if (!workspace) {
-            workspace = new Workspace(index, monitor, this.naturalRootRect, () => this.getActiveWorkspaceIndex(monitor));
+            workspace = new Workspace(
+                index,
+                monitor,
+                this.naturalRootRect,
+                (window) => this.maximizedRectForWindow(window),
+                () => this.getActiveWorkspaceIndex(monitor),
+            );
             this.workspaces.set(key, workspace);
         }
         return workspace;
@@ -441,7 +475,9 @@ export class Workspace {
     public readonly index: number;
     private readonly windows: WaylandWindow[] = [];
     private readonly naturalRootRect: (window: WaylandWindow) => ManagedWindowRect;
+    private readonly maximizedRootRect: (window: WaylandWindow) => ManagedWindowRect;
     private readonly activeWorkspaceIndex: () => number;
+    private readonly tileWidthByWindowId = new Map<string, number>();
     private activeWindowId: string | null = null;
     private scrollOffset = 0;
     public readonly monitor: string;
@@ -451,11 +487,13 @@ export class Workspace {
         index: number,
         monitor: string,
         naturalRootRect: (window: WaylandWindow) => ManagedWindowRect,
+        maximizedRootRect: (window: WaylandWindow) => ManagedWindowRect,
         activeWorkspaceIndex: () => number,
     ) {
         this.index = index;
         this.monitor = monitor;
         this.naturalRootRect = naturalRootRect;
+        this.maximizedRootRect = maximizedRootRect;
         this.activeWorkspaceIndex = activeWorkspaceIndex;
     }
 
@@ -472,7 +510,9 @@ export class Workspace {
         }
 
         if (this.isTiled) {
-            window.state[WINDOW_STATE_FLOATING_RECT].set(this.centeredFloatingRect(window));
+            const initialRect = this.centeredFloatingRect(window);
+            window.state[WINDOW_STATE_FLOATING_RECT].set(initialRect);
+            this.setTileWidthFromRect(window, initialRect, true);
             this.scrollToWindow(window);
             this.applyLayout();
         } else {
@@ -480,16 +520,19 @@ export class Workspace {
         }
     }
 
-    public removeWindow(window: WaylandWindow): boolean {
+    public removeWindow(window: WaylandWindow): WaylandWindow | null | undefined {
         const index = this.windows.findIndex((current) => current.id === window.id);
         if (index >= 0) {
             this.windows.splice(index, 1);
+            this.tileWidthByWindowId.delete(window.id);
+            let nextFocus: WaylandWindow | null = null;
             if (this.activeWindowId === window.id) {
-                this.activeWindowId = this.tileableWindows()[Math.min(index, this.tileableWindows().length - 1)]?.id ?? null;
+                nextFocus = this.tileableWindows()[Math.min(index, this.tileableWindows().length - 1)] ?? null;
+                this.activeWindowId = nextFocus?.id ?? null;
             }
-            return true;
+            return nextFocus;
         }
-        return false;
+        return undefined;
     }
 
     public hasWindow(window: WaylandWindow): boolean {
@@ -511,15 +554,25 @@ export class Workspace {
             return;
         }
 
+        const focusedWindow = this.focusedWindow();
+        const focusedTileableWindow = focusedWindow && this.shouldTile(focusedWindow) && !focusedWindow.state[WINDOW_STATE_MINIMIZED]()
+            ? focusedWindow
+            : undefined;
         this.isTiled = tiled;
         if (tiled) {
             for (const window of this.tileableWindows()) {
                 this.captureFloatingRect(window);
+                this.setTileWidthFromRect(window, window.state[WINDOW_STATE_FLOATING_RECT]() ?? window.state[WINDOW_STATE_RECT](), true);
             }
             this.scrollOffset = 0;
-            this.activeWindowId = this.tileableWindows().at(0)?.id ?? null;
+            const tileable = this.tileableWindows();
+            const previousActiveWindow = this.activeWindow(tileable);
+            this.activeWindowId = (focusedTileableWindow ?? previousActiveWindow ?? tileable.at(0))?.id ?? null;
+            if (focusedTileableWindow) {
+                this.scrollToWindow(focusedTileableWindow);
+            }
             this.applyLayout();
-            this.focusActiveWindow();
+            focusedTileableWindow?.focus();
             return;
         }
 
@@ -529,6 +582,10 @@ export class Workspace {
                 playRectAnimation(window, WINDOW_STATE_RECT, rect, WINDOW_MANAGEMENT_EASING, WINDOW_MANAGEMENT_ANIMATION_DURATION);
             }
             window.state[WINDOW_STATE_FLOATING_RECT].set(null);
+        }
+        if (focusedTileableWindow) {
+            this.activeWindowId = focusedTileableWindow.id;
+            focusedTileableWindow.focus();
         }
     }
 
@@ -550,24 +607,46 @@ export class Workspace {
         this.clampScrollOffset(tileable.length);
 
         const viewportRect = this.tileViewportRect();
-        const tileWidth = this.tileWidth(viewportRect);
         const tileHeight = read(viewportRect.height);
-        const pitch = tileWidth + TILE_GAP;
+        let nextX = read(viewportRect.x) - this.scrollOffset;
 
         tileable.forEach((window, index) => {
-            playRectAnimation(
-                window,
-                WINDOW_STATE_RECT,
-                {
-                    x: read(viewportRect.x) + index * pitch - this.scrollOffset,
+            const tileWidth = this.tileWidthForWindow(window, viewportRect);
+            const rect = window.state[WINDOW_STATE_MAXIMIZED]()
+                ? this.maximizedTileRect(window, nextX)
+                : {
+                    x: nextX,
                     y: read(viewportRect.y),
                     width: tileWidth,
                     height: tileHeight,
-                },
+                };
+            playRectAnimation(
+                window,
+                WINDOW_STATE_RECT,
+                rect,
                 WINDOW_MANAGEMENT_EASING,
                 TILE_ANIMATION_DURATION,
             );
+            nextX += tileWidth + (index === tileable.length - 1 ? 0 : TILE_GAP);
         });
+    }
+
+    public resizeTile(event: WindowResizeEvent) {
+        const tileable = this.tileableWindows();
+        if (!tileable.some((window) => window.id === event.window.id)) {
+            return;
+        }
+
+        stopRectAnimation(event.window, WINDOW_STATE_RECT);
+        this.activeWindowId = event.window.id;
+
+        const viewportRect = this.tileViewportRect();
+        const minWidth = this.minTileWidth(event.window, viewportRect);
+        const maxWidth = this.maxTileWidth(event.window);
+        const width = clamp(event.currentRect.width, minWidth, Math.max(minWidth, maxWidth));
+        this.tileWidthByWindowId.set(event.window.id, width);
+        this.scrollToWindow(event.window);
+        this.applyLayout();
     }
 
     public focusWindow(window: WaylandWindow) {
@@ -612,6 +691,14 @@ export class Workspace {
         return this.windows.filter((window) => this.shouldTile(window) && !window.state[WINDOW_STATE_MINIMIZED]());
     }
 
+    private focusedWindow(): WaylandWindow | undefined {
+        return this.windows.find((window) => read(window.isFocused));
+    }
+
+    private activeWindow(windows = this.windows): WaylandWindow | undefined {
+        return windows.find((window) => window.id === this.activeWindowId);
+    }
+
     private captureFloatingRect(window: WaylandWindow) {
         if (!window.state[WINDOW_STATE_FLOATING_RECT]()) {
             window.state[WINDOW_STATE_FLOATING_RECT].set(window.state[WINDOW_STATE_RECT]());
@@ -648,12 +735,12 @@ export class Workspace {
 
         const viewportRect = this.tileViewportRect();
         const viewportWidth = read(viewportRect.width);
-        const tileWidth = this.tileWidth(viewportRect);
-        const pitch = tileWidth + TILE_GAP;
-        const windowLeft = index * pitch;
-        const windowRight = windowLeft + tileWidth;
+        const windowLeft = this.tileLeftForIndex(tileable, index, viewportRect);
+        const windowRight = windowLeft + this.tileWidthForWindow(window, viewportRect);
 
-        if (windowLeft < this.scrollOffset) {
+        if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+            this.scrollOffset = windowLeft + (windowRight - windowLeft) / 2 - viewportWidth / 2;
+        } else if (windowLeft < this.scrollOffset) {
             this.scrollOffset = windowLeft;
         } else if (windowRight > this.scrollOffset + viewportWidth) {
             this.scrollOffset = windowRight - viewportWidth;
@@ -663,16 +750,84 @@ export class Workspace {
     }
 
     private clampScrollOffset(tileCount: number) {
+        const tileable = this.tileableWindows();
         const viewportRect = this.tileViewportRect();
         const viewportWidth = read(viewportRect.width);
-        const tileWidth = this.tileWidth(viewportRect);
-        const contentWidth = tileCount === 0 ? 0 : tileCount * tileWidth + Math.max(0, tileCount - 1) * TILE_GAP;
+        const contentWidth = this.tileContentWidth(tileable.slice(0, tileCount), viewportRect);
         const maxScrollOffset = Math.max(0, contentWidth - viewportWidth);
         this.scrollOffset = clamp(this.scrollOffset, 0, maxScrollOffset);
     }
 
-    private tileWidth(viewportRect: ManagedWindowRect): number {
-        return Math.max(1, read(viewportRect.width) * TILE_WIDTH_RATIO);
+    private tileWidthForWindow(window: WaylandWindow, viewportRect: ManagedWindowRect): number {
+        if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+            return read(this.maximizedRootRect(window).width);
+        }
+
+        const width = this.tileWidthByWindowId.get(window.id) ?? this.defaultTileWidth(viewportRect);
+        return clamp(width, this.minTileWidth(window, viewportRect), Math.max(this.minTileWidth(window, viewportRect), this.maxTileWidth(window)));
+    }
+
+    private maximizedTileRect(window: WaylandWindow, x: number): ManagedWindowRect {
+        const maximizedRect = this.maximizedRootRect(window);
+        return {
+            x,
+            y: read(maximizedRect.y),
+            width: read(maximizedRect.width),
+            height: read(maximizedRect.height),
+        };
+    }
+
+    private setTileWidthFromRect(window: WaylandWindow, rect: ManagedWindowRect, overwrite: boolean) {
+        if (!overwrite && this.tileWidthByWindowId.has(window.id)) {
+            return;
+        }
+        const viewportRect = this.tileViewportRect();
+        this.tileWidthByWindowId.set(
+            window.id,
+            clamp(read(rect.width), this.minTileWidth(window, viewportRect), Math.max(this.minTileWidth(window, viewportRect), this.maxTileWidth(window))),
+        );
+    }
+
+    private defaultTileWidth(viewportRect: ManagedWindowRect): number {
+        return Math.max(TILE_MIN_WIDTH, read(viewportRect.width) * TILE_WIDTH_RATIO);
+    }
+
+    private minTileWidth(window: WaylandWindow, viewportRect: ManagedWindowRect): number {
+        const constraints = window.sizeConstraints();
+        const extra = this.rootClientWidthExtra(window);
+        return Math.max(TILE_MIN_WIDTH, (constraints.min?.width ?? 1) + extra, read(viewportRect.width) * 0.2);
+    }
+
+    private maxTileWidth(window: WaylandWindow): number {
+        const constraints = window.sizeConstraints();
+        const extra = this.rootClientWidthExtra(window);
+        const max = constraints.max?.width;
+        return max && max > 0 ? max + extra : Number.POSITIVE_INFINITY;
+    }
+
+    private rootClientWidthExtra(window: WaylandWindow): number {
+        const natural = this.naturalRootRect(window);
+        return Math.max(0, read(natural.width) - window.position.width);
+    }
+
+    private tileLeftForIndex(
+        tileable: WaylandWindow[],
+        index: number,
+        viewportRect: ManagedWindowRect,
+    ): number {
+        let left = 0;
+        for (let i = 0; i < index; i++) {
+            left += this.tileWidthForWindow(tileable[i], viewportRect) + TILE_GAP;
+        }
+        return left;
+    }
+
+    private tileContentWidth(tileable: WaylandWindow[], viewportRect: ManagedWindowRect): number {
+        if (tileable.length === 0) {
+            return 0;
+        }
+        return tileable.reduce((sum, window) => sum + this.tileWidthForWindow(window, viewportRect), 0)
+            + (tileable.length - 1) * TILE_GAP;
     }
 
     private tileViewportRect(): ManagedWindowRect {
