@@ -1,3 +1,5 @@
+use bumpalo::Bump;
+use hashbrown::{DefaultHashBuilder, HashMap as BumpHashMap};
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     desktop::Window,
@@ -25,6 +27,25 @@ use super::{
     WaylandWindowSnapshot, WindowPositionSnapshot, WindowTransform, reapply_tree_preserving_layout,
     window_model::ManagedWindowRectSnapshot,
 };
+
+type BumpSharedEdgeGeometryMap<'a> =
+    BumpHashMap<&'a str, SharedEdgeNodeGeometry, DefaultHashBuilder, &'a Bump>;
+
+trait SharedEdgeGeometryLookup {
+    fn shared_edge_geometry(&self, stable_id: &str) -> Option<SharedEdgeNodeGeometry>;
+}
+
+impl SharedEdgeGeometryLookup for std::collections::HashMap<String, SharedEdgeNodeGeometry> {
+    fn shared_edge_geometry(&self, stable_id: &str) -> Option<SharedEdgeNodeGeometry> {
+        self.get(stable_id).copied()
+    }
+}
+
+impl SharedEdgeGeometryLookup for BumpSharedEdgeGeometryMap<'_> {
+    fn shared_edge_geometry(&self, stable_id: &str) -> Option<SharedEdgeNodeGeometry> {
+        self.get(stable_id).copied()
+    }
+}
 
 fn clip_debug_enabled() -> bool {
     use std::sync::OnceLock;
@@ -2850,16 +2871,43 @@ impl ShojiWM {
                         .map_err(super::DecorationEvaluationError::Layout)
                         .ok();
                     if let Some(layout) = layout {
-                        let shared_edges = build_shared_edge_geometry_map(&layout);
-                        let content_clip =
-                            content_clip_for_layout(&decoration.tree, &layout, &shared_edges);
-                        let order_map = build_render_order_map(&layout);
-                        let (buffers, mut shader_buffers) = build_cached_buffers_and_shaders(
-                            &layout,
-                            &order_map,
-                            None,
-                            &shared_edges,
-                        );
+                        let (content_clip, buffers, shader_buffers, text_buffers, icon_buffers) = {
+                            let arena = Bump::new();
+                            let shared_edges = build_shared_edge_geometry_map_in(&layout, &arena);
+                            let content_clip =
+                                content_clip_for_layout(&decoration.tree, &layout, &shared_edges);
+                            let order_map = build_render_order_map(&layout);
+                            let (buffers, mut shader_buffers) = build_cached_buffers_and_shaders(
+                                &layout,
+                                &order_map,
+                                None,
+                                &shared_edges,
+                            );
+                            freeze_manual_shader_buffers(
+                                &previous_shader_buffers,
+                                &mut shader_buffers,
+                            );
+                            let text_buffers = retarget_text_buffers_with_shared_edges(
+                                &layout,
+                                &order_map,
+                                &shared_edges,
+                                &previous_text_buffers,
+                            );
+                            let icon_buffers = retarget_icon_buffers_with_shared_edges(
+                                &layout,
+                                &order_map,
+                                &shared_edges,
+                                &decoration.snapshot,
+                                &decoration.icon_buffers,
+                            );
+                            (
+                                content_clip,
+                                buffers,
+                                shader_buffers,
+                                text_buffers,
+                                icon_buffers,
+                            )
+                        };
                         decoration.layout = layout;
                         decoration.content_clip = content_clip;
                         decoration.client_rect = desired_client;
@@ -2870,21 +2918,9 @@ impl ShojiWM {
                             height: desired_client.height,
                         };
                         decoration.buffers = buffers;
-                        freeze_manual_shader_buffers(&previous_shader_buffers, &mut shader_buffers);
                         decoration.shader_buffers = shader_buffers;
-                        decoration.text_buffers = retarget_text_buffers_with_shared_edges(
-                            &decoration.layout,
-                            &order_map,
-                            &shared_edges,
-                            &previous_text_buffers,
-                        );
-                        decoration.icon_buffers = retarget_icon_buffers_with_shared_edges(
-                            &decoration.layout,
-                            &order_map,
-                            &shared_edges,
-                            &decoration.snapshot,
-                            &decoration.icon_buffers,
-                        );
+                        decoration.text_buffers = text_buffers;
+                        decoration.icon_buffers = icon_buffers;
                     }
                 }
             } else if position_changed {
@@ -2916,7 +2952,7 @@ impl ShojiWM {
 fn content_clip_for_layout(
     _tree: &DecorationTree,
     layout: &ComputedDecorationTree,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     slot_content_clip_for_node(&layout.root, None, None, shared_edges)
 }
@@ -3149,7 +3185,7 @@ fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
     nearest_rounded_mask: Option<crate::ssd::ResolvedDecorationClip>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
         node.style
@@ -3483,7 +3519,7 @@ fn build_cached_buffers_and_shaders(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> (Vec<CachedDecorationBuffer>, Vec<CachedShaderEffect>) {
     let mut buffers = Vec::new();
     let mut shader_buffers = Vec::new();
@@ -3533,7 +3569,7 @@ fn build_text_buffers_with_fallback(
 fn build_text_buffers_with_shared_edges(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     previous: &[CachedDecorationLabel],
@@ -3544,7 +3580,7 @@ fn build_text_buffers_with_shared_edges(
         "root".into(),
         order_map,
         None,
-        &shared_edges,
+        shared_edges,
         raster_scale,
         rasterizer,
         previous,
@@ -3574,7 +3610,7 @@ fn build_icon_buffers(
 fn build_icon_buffers_with_shared_edges(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
@@ -3585,7 +3621,7 @@ fn build_icon_buffers_with_shared_edges(
         "root".into(),
         order_map,
         None,
-        &shared_edges,
+        shared_edges,
         raster_scale,
         snapshot,
         rasterizer,
@@ -3597,7 +3633,7 @@ fn build_icon_buffers_with_shared_edges(
 fn retarget_text_buffers_with_shared_edges(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     previous: &[CachedDecorationLabel],
 ) -> Vec<CachedDecorationLabel> {
     let mut buffers = Vec::new();
@@ -3616,7 +3652,7 @@ fn collect_retargeted_text_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     previous: &[CachedDecorationLabel],
     buffers: &mut Vec<CachedDecorationLabel>,
 ) {
@@ -3624,7 +3660,7 @@ fn collect_retargeted_text_buffers(
         return;
     }
 
-    for (index, child) in paint_ordered_children(node) {
+    for_each_paint_ordered_child(node, |index, child| {
         collect_retargeted_text_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -3633,7 +3669,7 @@ fn collect_retargeted_text_buffers(
             previous,
             buffers,
         );
-    }
+    });
 
     let super::DecorationNodeKind::Label(label) = &node.kind else {
         return;
@@ -3647,8 +3683,7 @@ fn collect_retargeted_text_buffers(
     let shared_geometry = node
         .stable_id
         .as_deref()
-        .and_then(|stable_id| shared_edges.get(stable_id))
-        .copied();
+        .and_then(|stable_id| shared_edges.shared_edge_geometry(stable_id));
     let rect_precise = shared_geometry
         .map(|geometry| geometry.rect_precise)
         .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect));
@@ -3683,7 +3718,7 @@ fn collect_retargeted_text_buffers(
 fn retarget_icon_buffers_with_shared_edges(
     layout: &ComputedDecorationTree,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     snapshot: &WaylandWindowSnapshot,
     previous: &[CachedDecorationIcon],
 ) -> Vec<CachedDecorationIcon> {
@@ -3704,7 +3739,7 @@ fn collect_retargeted_icon_buffers(
     node: &super::ComputedDecorationNode,
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     snapshot: &WaylandWindowSnapshot,
     previous: &[CachedDecorationIcon],
     buffers: &mut Vec<CachedDecorationIcon>,
@@ -3713,7 +3748,7 @@ fn collect_retargeted_icon_buffers(
         return;
     }
 
-    for (index, child) in paint_ordered_children(node) {
+    for_each_paint_ordered_child(node, |index, child| {
         collect_retargeted_icon_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -3723,7 +3758,7 @@ fn collect_retargeted_icon_buffers(
             previous,
             buffers,
         );
-    }
+    });
 
     if !matches!(
         node.kind,
@@ -3740,8 +3775,7 @@ fn collect_retargeted_icon_buffers(
     let shared_geometry = node
         .stable_id
         .as_deref()
-        .and_then(|stable_id| shared_edges.get(stable_id))
-        .copied();
+        .and_then(|stable_id| shared_edges.shared_edge_geometry(stable_id));
     let rect_precise = shared_geometry
         .map(|geometry| geometry.rect_precise)
         .unwrap_or_else(|| precise_rect_from_resolved(node.resolved_rect));
@@ -3993,6 +4027,26 @@ fn paint_ordered_children(
     children
 }
 
+fn for_each_paint_ordered_child(
+    node: &super::ComputedDecorationNode,
+    mut f: impl FnMut(usize, &super::ComputedDecorationNode),
+) {
+    if node
+        .children
+        .iter()
+        .all(|child| child.style.z_index.unwrap_or(0) == 0)
+    {
+        for (index, child) in node.children.iter().enumerate().rev() {
+            f(index, child);
+        }
+        return;
+    }
+
+    for (index, child) in paint_ordered_children(node) {
+        f(index, child);
+    }
+}
+
 fn collect_render_orders(
     node: &super::ComputedDecorationNode,
     path: String,
@@ -4023,9 +4077,9 @@ fn collect_render_orders(
         _ => {}
     }
 
-    for (index, child) in paint_ordered_children(node) {
+    for_each_paint_ordered_child(node, |index, child| {
         collect_render_orders(child, format!("{path}/child-{index}"), order, map);
-    }
+    });
 
     if let Some(border) = node.style.border {
         let color = border.color.with_opacity(node.style.opacity);
@@ -4075,7 +4129,7 @@ fn collect_cached_buffers(
     nearest_rounded_clip_radius_precise: Option<f32>,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     buffers: &mut Vec<CachedDecorationBuffer>,
     shader_buffers: &mut Vec<CachedShaderEffect>,
 ) {
@@ -4091,8 +4145,7 @@ fn collect_cached_buffers(
     let shared_geometry = node
         .stable_id
         .as_deref()
-        .and_then(|stable_id| shared_edges.get(stable_id))
-        .copied();
+        .and_then(|stable_id| shared_edges.shared_edge_geometry(stable_id));
 
     let node_radius = node.resolved_border_radius.round_to_i32().max(0);
     let current_clip_rect = ancestor_clip.map(|clip| clip.rect);
@@ -4397,7 +4450,7 @@ fn collect_cached_buffers(
                 }
             }
 
-            for (index, child) in paint_ordered_children(node) {
+            for_each_paint_ordered_child(node, |index, child| {
                 collect_cached_buffers(
                     child,
                     format!("{path}/child-{index}"),
@@ -4414,7 +4467,7 @@ fn collect_cached_buffers(
                     buffers,
                     shader_buffers,
                 );
-            }
+            });
         }
     }
 }
@@ -4424,7 +4477,7 @@ fn collect_text_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     raster_scale: i32,
     rasterizer: &mut crate::backend::text::TextRasterizer,
     previous: &[CachedDecorationLabel],
@@ -4434,7 +4487,7 @@ fn collect_text_buffers(
         return;
     }
 
-    for (index, child) in paint_ordered_children(node) {
+    for_each_paint_ordered_child(node, |index, child| {
         collect_text_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -4446,7 +4499,7 @@ fn collect_text_buffers(
             previous,
             buffers,
         );
-    }
+    });
 
     if dirty_node_ids.is_some_and(|dirty_node_ids| {
         !node
@@ -4463,8 +4516,7 @@ fn collect_text_buffers(
     let shared_geometry = node
         .stable_id
         .as_deref()
-        .and_then(|stable_id| shared_edges.get(stable_id))
-        .copied();
+        .and_then(|stable_id| shared_edges.shared_edge_geometry(stable_id));
     let color = node.style.color.unwrap_or(super::Color::WHITE);
     if color.a == 0 {
         return;
@@ -4556,7 +4608,7 @@ fn collect_icon_buffers(
     path: String,
     order_map: &std::collections::HashMap<String, usize>,
     dirty_node_ids: Option<&std::collections::HashSet<&str>>,
-    shared_edges: &std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+    shared_edges: &impl SharedEdgeGeometryLookup,
     raster_scale: i32,
     snapshot: &WaylandWindowSnapshot,
     rasterizer: &mut crate::backend::icon::IconRasterizer,
@@ -4566,7 +4618,7 @@ fn collect_icon_buffers(
         return;
     }
 
-    for (index, child) in paint_ordered_children(node) {
+    for_each_paint_ordered_child(node, |index, child| {
         collect_icon_buffers(
             child,
             format!("{path}/child-{index}"),
@@ -4578,7 +4630,7 @@ fn collect_icon_buffers(
             rasterizer,
             buffers,
         );
-    }
+    });
 
     if dirty_node_ids.is_some_and(|dirty_node_ids| {
         !node
@@ -4597,8 +4649,7 @@ fn collect_icon_buffers(
     let shared_geometry = node
         .stable_id
         .as_deref()
-        .and_then(|stable_id| shared_edges.get(stable_id))
-        .copied();
+        .and_then(|stable_id| shared_edges.shared_edge_geometry(stable_id));
 
     let spec = IconSpec {
         rect: node.rect,
@@ -4800,23 +4851,40 @@ struct SharedEdgeBuilder {
 }
 
 impl SharedEdgeBuilder {
-    fn edge(
-        &mut self,
+    fn matching_edge(
+        &self,
         axis: SharedEdgeAxis,
         logical_raw: i32,
         candidates: &[SharedEdgeId],
-    ) -> SharedEdgeId {
-        if let Some(existing) = candidates.iter().copied().find(|candidate| {
+    ) -> Option<SharedEdgeId> {
+        candidates.iter().copied().find(|candidate| {
             let spec = self.spec(*candidate);
             spec.axis == axis && spec.logical_raw == logical_raw
-        }) {
-            return existing;
-        }
+        })
+    }
 
+    fn new_edge(&mut self, axis: SharedEdgeAxis, logical_raw: i32) -> SharedEdgeId {
         let id = SharedEdgeId(self.next_id);
         self.next_id += 1;
         self.edges.push(SharedEdgeSpec { axis, logical_raw });
         id
+    }
+
+    fn edge_with_context(
+        &mut self,
+        axis: SharedEdgeAxis,
+        logical_raw: i32,
+        parent_candidates: &[SharedEdgeId],
+        previous_candidates: &[SharedEdgeId],
+    ) -> SharedEdgeId {
+        if let Some(existing) = self.matching_edge(axis, logical_raw, parent_candidates) {
+            return existing;
+        }
+        if let Some(existing) = self.matching_edge(axis, logical_raw, previous_candidates) {
+            return existing;
+        }
+
+        self.new_edge(axis, logical_raw)
     }
 
     fn spec(&self, id: SharedEdgeId) -> SharedEdgeSpec {
@@ -4828,57 +4896,71 @@ impl SharedEdgeBuilder {
         rect: crate::ssd::ResolvedLogicalRect,
         context: SharedEdgeBuildContext,
     ) -> SharedEdgeRect {
-        let mut left_candidates = Vec::new();
-        let mut top_candidates = Vec::new();
-        let mut right_candidates = Vec::new();
-        let mut bottom_candidates = Vec::new();
-
-        if let Some(parent) = context.parent {
-            left_candidates.extend([parent.rect.left, parent.content.left]);
-            top_candidates.extend([parent.rect.top, parent.content.top]);
-            right_candidates.extend([parent.rect.right, parent.content.right]);
-            bottom_candidates.extend([parent.rect.bottom, parent.content.bottom]);
-        }
-
-        if let Some(previous) = context.previous_sibling {
-            left_candidates.extend([
+        let parent_left = context
+            .parent
+            .map(|parent| [parent.rect.left, parent.content.left]);
+        let parent_top = context
+            .parent
+            .map(|parent| [parent.rect.top, parent.content.top]);
+        let parent_right = context
+            .parent
+            .map(|parent| [parent.rect.right, parent.content.right]);
+        let parent_bottom = context
+            .parent
+            .map(|parent| [parent.rect.bottom, parent.content.bottom]);
+        let previous_vertical = context.previous_sibling.map(|previous| {
+            [
                 previous.rect.left,
                 previous.rect.right,
                 previous.content.left,
                 previous.content.right,
-            ]);
-            top_candidates.extend([
+            ]
+        });
+        let previous_horizontal = context.previous_sibling.map(|previous| {
+            [
                 previous.rect.top,
                 previous.rect.bottom,
                 previous.content.top,
                 previous.content.bottom,
-            ]);
-            right_candidates.extend([
-                previous.rect.left,
-                previous.rect.right,
-                previous.content.left,
-                previous.content.right,
-            ]);
-            bottom_candidates.extend([
-                previous.rect.top,
-                previous.rect.bottom,
-                previous.content.top,
-                previous.content.bottom,
-            ]);
-        }
+            ]
+        });
 
         SharedEdgeRect {
-            left: self.edge(SharedEdgeAxis::Vertical, rect.x.raw(), &left_candidates),
-            top: self.edge(SharedEdgeAxis::Horizontal, rect.y.raw(), &top_candidates),
-            right: self.edge(
+            left: self.edge_with_context(
+                SharedEdgeAxis::Vertical,
+                rect.x.raw(),
+                parent_left.as_ref().map(|ids| &ids[..]).unwrap_or(&[]),
+                previous_vertical
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
+            ),
+            top: self.edge_with_context(
+                SharedEdgeAxis::Horizontal,
+                rect.y.raw(),
+                parent_top.as_ref().map(|ids| &ids[..]).unwrap_or(&[]),
+                previous_horizontal
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
+            ),
+            right: self.edge_with_context(
                 SharedEdgeAxis::Vertical,
                 (rect.x + rect.width).raw(),
-                &right_candidates,
+                parent_right.as_ref().map(|ids| &ids[..]).unwrap_or(&[]),
+                previous_vertical
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
             ),
-            bottom: self.edge(
+            bottom: self.edge_with_context(
                 SharedEdgeAxis::Horizontal,
                 (rect.y + rect.height).raw(),
-                &bottom_candidates,
+                parent_bottom.as_ref().map(|ids| &ids[..]).unwrap_or(&[]),
+                previous_horizontal
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
             ),
         }
     }
@@ -4889,57 +4971,84 @@ impl SharedEdgeBuilder {
         context: SharedEdgeBuildContext,
         rect_refs: SharedEdgeRect,
     ) -> SharedEdgeRect {
-        let mut left_candidates = vec![rect_refs.left];
-        let mut top_candidates = vec![rect_refs.top];
-        let mut right_candidates = vec![rect_refs.right];
-        let mut bottom_candidates = vec![rect_refs.bottom];
-
-        if let Some(parent) = context.parent {
-            left_candidates.extend([parent.rect.left, parent.content.left]);
-            top_candidates.extend([parent.rect.top, parent.content.top]);
-            right_candidates.extend([parent.rect.right, parent.content.right]);
-            bottom_candidates.extend([parent.rect.bottom, parent.content.bottom]);
-        }
-
-        if let Some(previous) = context.previous_sibling {
-            left_candidates.extend([
+        let parent_left = context
+            .parent
+            .map(|parent| [rect_refs.left, parent.rect.left, parent.content.left]);
+        let parent_top = context
+            .parent
+            .map(|parent| [rect_refs.top, parent.rect.top, parent.content.top]);
+        let parent_right = context
+            .parent
+            .map(|parent| [rect_refs.right, parent.rect.right, parent.content.right]);
+        let parent_bottom = context
+            .parent
+            .map(|parent| [rect_refs.bottom, parent.rect.bottom, parent.content.bottom]);
+        let own_left = [rect_refs.left];
+        let own_top = [rect_refs.top];
+        let own_right = [rect_refs.right];
+        let own_bottom = [rect_refs.bottom];
+        let previous_vertical = context.previous_sibling.map(|previous| {
+            [
                 previous.rect.left,
                 previous.rect.right,
                 previous.content.left,
                 previous.content.right,
-            ]);
-            top_candidates.extend([
+            ]
+        });
+        let previous_horizontal = context.previous_sibling.map(|previous| {
+            [
                 previous.rect.top,
                 previous.rect.bottom,
                 previous.content.top,
                 previous.content.bottom,
-            ]);
-            right_candidates.extend([
-                previous.rect.left,
-                previous.rect.right,
-                previous.content.left,
-                previous.content.right,
-            ]);
-            bottom_candidates.extend([
-                previous.rect.top,
-                previous.rect.bottom,
-                previous.content.top,
-                previous.content.bottom,
-            ]);
-        }
+            ]
+        });
 
         SharedEdgeRect {
-            left: self.edge(SharedEdgeAxis::Vertical, rect.x.raw(), &left_candidates),
-            top: self.edge(SharedEdgeAxis::Horizontal, rect.y.raw(), &top_candidates),
-            right: self.edge(
+            left: self.edge_with_context(
+                SharedEdgeAxis::Vertical,
+                rect.x.raw(),
+                parent_left
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&own_left),
+                previous_vertical
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
+            ),
+            top: self.edge_with_context(
+                SharedEdgeAxis::Horizontal,
+                rect.y.raw(),
+                parent_top.as_ref().map(|ids| &ids[..]).unwrap_or(&own_top),
+                previous_horizontal
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
+            ),
+            right: self.edge_with_context(
                 SharedEdgeAxis::Vertical,
                 (rect.x + rect.width).raw(),
-                &right_candidates,
+                parent_right
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&own_right),
+                previous_vertical
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
             ),
-            bottom: self.edge(
+            bottom: self.edge_with_context(
                 SharedEdgeAxis::Horizontal,
                 (rect.y + rect.height).raw(),
-                &bottom_candidates,
+                parent_bottom
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&own_bottom),
+                previous_horizontal
+                    .as_ref()
+                    .map(|ids| &ids[..])
+                    .unwrap_or(&[]),
             ),
         }
     }
@@ -5000,17 +5109,114 @@ fn build_shared_edge_tree(layout: &ComputedDecorationTree) -> SharedEdgeTree {
     }
 }
 
-fn precise_rect_from_shared_edge_rect(
-    tree: &SharedEdgeTree,
+fn collect_shared_edge_geometry_map_node(
+    builder: &mut SharedEdgeBuilder,
+    node: &super::ComputedDecorationNode,
+    context: SharedEdgeBuildContext,
+    out: &mut std::collections::HashMap<String, SharedEdgeNodeGeometry>,
+) -> SharedEdgeNodeRefs {
+    let rect = builder.rect_from_resolved(node.resolved_rect, context);
+    let content_rect = builder.inner_rect_from_resolved(node.resolved_content_rect, context, rect);
+    let clip_rect = node
+        .resolved_effective_clip
+        .map(|clip| builder.inner_rect_from_resolved(clip.rect, context, content_rect));
+    let refs = SharedEdgeNodeRefs {
+        rect,
+        content: content_rect,
+    };
+
+    if let Some(stable_id) = node.stable_id.as_deref() {
+        out.insert(
+            stable_id.to_string(),
+            SharedEdgeNodeGeometry {
+                rect_precise: precise_rect_from_shared_edges(&builder.edges, rect),
+                content_rect_precise: precise_rect_from_shared_edges(&builder.edges, content_rect),
+                clip_rect_precise: clip_rect
+                    .map(|rect| precise_rect_from_shared_edges(&builder.edges, rect)),
+            },
+        );
+    }
+
+    let mut previous_sibling = None;
+    for child in &node.children {
+        let is_absolute = matches!(child.style.position, Some(super::StylePosition::Absolute));
+        let child_context = if is_absolute {
+            SharedEdgeBuildContext::default()
+        } else {
+            SharedEdgeBuildContext {
+                parent: Some(refs),
+                previous_sibling,
+            }
+        };
+        let child_refs = collect_shared_edge_geometry_map_node(builder, child, child_context, out);
+        if !is_absolute {
+            previous_sibling = Some(child_refs);
+        }
+    }
+
+    refs
+}
+
+fn collect_shared_edge_geometry_map_node_in<'a>(
+    builder: &mut SharedEdgeBuilder,
+    node: &'a super::ComputedDecorationNode,
+    context: SharedEdgeBuildContext,
+    out: &mut BumpSharedEdgeGeometryMap<'a>,
+) -> SharedEdgeNodeRefs {
+    let rect = builder.rect_from_resolved(node.resolved_rect, context);
+    let content_rect = builder.inner_rect_from_resolved(node.resolved_content_rect, context, rect);
+    let clip_rect = node
+        .resolved_effective_clip
+        .map(|clip| builder.inner_rect_from_resolved(clip.rect, context, content_rect));
+    let refs = SharedEdgeNodeRefs {
+        rect,
+        content: content_rect,
+    };
+
+    if let Some(stable_id) = node.stable_id.as_deref() {
+        out.insert(
+            stable_id,
+            SharedEdgeNodeGeometry {
+                rect_precise: precise_rect_from_shared_edges(&builder.edges, rect),
+                content_rect_precise: precise_rect_from_shared_edges(&builder.edges, content_rect),
+                clip_rect_precise: clip_rect
+                    .map(|rect| precise_rect_from_shared_edges(&builder.edges, rect)),
+            },
+        );
+    }
+
+    let mut previous_sibling = None;
+    for child in &node.children {
+        let is_absolute = matches!(child.style.position, Some(super::StylePosition::Absolute));
+        let child_context = if is_absolute {
+            SharedEdgeBuildContext::default()
+        } else {
+            SharedEdgeBuildContext {
+                parent: Some(refs),
+                previous_sibling,
+            }
+        };
+        let child_refs =
+            collect_shared_edge_geometry_map_node_in(builder, child, child_context, out);
+        if !is_absolute {
+            previous_sibling = Some(child_refs);
+        }
+    }
+
+    refs
+}
+
+fn precise_rect_from_shared_edges(
+    edges: &[SharedEdgeSpec],
     rect: SharedEdgeRect,
 ) -> PreciseLogicalRect {
-    let left = tree.edges[rect.left.0 as usize].logical_raw as f32
+    let left = edges[rect.left.0 as usize].logical_raw as f32
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
-    let top = tree.edges[rect.top.0 as usize].logical_raw as f32
+    let top = edges[rect.top.0 as usize].logical_raw as f32
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
-    let right = tree.edges[rect.right.0 as usize].logical_raw as f32
+    let right = edges[rect.right.0 as usize].logical_raw as f32
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
-    let bottom = tree.edges[rect.bottom.0 as usize].logical_raw as f32
+    let bottom = edges[rect.bottom.0 as usize].logical_raw as f32
         / crate::ssd::RESOLVED_LAYOUT_SUBPIXELS as f32;
 
     PreciseLogicalRect {
@@ -5021,35 +5227,32 @@ fn precise_rect_from_shared_edge_rect(
     }
 }
 
-fn collect_shared_edge_node_geometry(
-    tree: &SharedEdgeTree,
-    node: &SharedEdgeTreeNode,
-    out: &mut std::collections::HashMap<String, SharedEdgeNodeGeometry>,
-) {
-    if node.stable_id != "<none>" {
-        out.insert(
-            node.stable_id.clone(),
-            SharedEdgeNodeGeometry {
-                rect_precise: precise_rect_from_shared_edge_rect(tree, node.rect),
-                content_rect_precise: precise_rect_from_shared_edge_rect(tree, node.content_rect),
-                clip_rect_precise: node
-                    .clip_rect
-                    .map(|rect| precise_rect_from_shared_edge_rect(tree, rect)),
-            },
-        );
-    }
-
-    for child in &node.children {
-        collect_shared_edge_node_geometry(tree, child, out);
-    }
-}
-
 fn build_shared_edge_geometry_map(
     layout: &ComputedDecorationTree,
 ) -> std::collections::HashMap<String, SharedEdgeNodeGeometry> {
-    let tree = build_shared_edge_tree(layout);
     let mut map = std::collections::HashMap::new();
-    collect_shared_edge_node_geometry(&tree, &tree.root, &mut map);
+    let mut builder = SharedEdgeBuilder::default();
+    collect_shared_edge_geometry_map_node(
+        &mut builder,
+        &layout.root,
+        SharedEdgeBuildContext::default(),
+        &mut map,
+    );
+    map
+}
+
+fn build_shared_edge_geometry_map_in<'a>(
+    layout: &'a ComputedDecorationTree,
+    arena: &'a Bump,
+) -> BumpSharedEdgeGeometryMap<'a> {
+    let mut map = BumpSharedEdgeGeometryMap::new_in(arena);
+    let mut builder = SharedEdgeBuilder::default();
+    collect_shared_edge_geometry_map_node_in(
+        &mut builder,
+        &layout.root,
+        SharedEdgeBuildContext::default(),
+        &mut map,
+    );
     map
 }
 

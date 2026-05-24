@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
+use mimalloc::MiMalloc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -26,6 +27,9 @@ pub mod runtime_process;
 pub mod ssd;
 pub mod state;
 pub mod xwayland_satellite;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
