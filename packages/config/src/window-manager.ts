@@ -124,6 +124,14 @@ export class HybridWindowManager {
         this.windowStack.add(window);
 
         window.setCloseAnimationDuration(OPEN_CLOSE_ANIMATION_DURATION);
+        // Kick the open animation off here (preconfigure phase), not in
+        // onFirstCommit. The animation is purely delta-based (rect add y:200→0,
+        // opacity multiply 0→1) so it doesn't need the final layout to exist
+        // yet — and starting at preconfigure means by the time the client's
+        // first commit lands the animation already has elapsed time accrued.
+        // That matches the perceived timing of the old signal-driven version,
+        // where the animation variable started in onOpen.
+        scheduleOpenAnimation(window);
     }
 
     public onFirstCommit(window: WaylandWindow) {
@@ -149,7 +157,6 @@ export class HybridWindowManager {
             window.state[WINDOW_STATE_RECT].set(this.maximizedRectForWindow(window));
             window.state[WINDOW_STATE_MAXIMIZED].set(true);
         }
-        scheduleOpenAnimation(window);
     }
 
     public onStartClose(window: WaylandWindow) {

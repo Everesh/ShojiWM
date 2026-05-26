@@ -1152,7 +1152,7 @@ impl ShojiWM {
         // Initial configure needs the TS-managed rect before the window's first commit.
         // This uses a preconfigure runtime evaluation; the runtime keeps onOpen-created
         // window state but reanchors animations when the first real evaluation arrives.
-        let evaluation = self
+        let mut evaluation = self
             .decoration_evaluator
             .evaluate_window_preview(snapshot, now_ms)?;
 
@@ -1163,6 +1163,17 @@ impl ShojiWM {
         self.consume_runtime_process_config(evaluation.process_config.clone());
         if !evaluation.process_actions.is_empty() {
             self.apply_runtime_process_actions(evaluation.process_actions.clone());
+        }
+        // Apply window actions queued during onOpen (e.g. window.focus(),
+        // scheduleAnimation). Without this, anything onOpen pushes — most
+        // notably `window.focus()` — gets dropped on the floor, since the
+        // preconfigure path is the only one that surfaces those side effects
+        // for newly-mapped windows. The caller (xdg_shell.rs new_toplevel)
+        // has already mapped the window into `self.space`, so action lookup
+        // (`space.elements().find(...)`) succeeds.
+        if !evaluation.actions.is_empty() {
+            let actions = std::mem::take(&mut evaluation.actions);
+            self.apply_runtime_window_actions(actions);
         }
         self.runtime_scheduler_enabled = evaluation.next_poll_in_ms.is_some();
 
