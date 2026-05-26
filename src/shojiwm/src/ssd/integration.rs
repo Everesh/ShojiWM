@@ -340,6 +340,11 @@ pub struct WindowDecorationState {
     /// `visual_transform` — replaced per frame during animations, then frozen
     /// at the final sample until the next TS evaluation arrives.
     pub managed_window: super::ManagedWindowState,
+    /// True while Rust-side managed-window animation is actively driving this
+    /// window. Hidden workspaces are represented as `idle` at rest, but a
+    /// workspace-switch animation must still be renderable while it is bringing
+    /// an idle window back on screen.
+    pub managed_window_animation_active: bool,
     /// Composition-declared transform from the most recent TS evaluation,
     /// **without** any animation deltas applied. `advance_managed_window_animations`
     /// resets `visual_transform` from this each frame before sampling the
@@ -388,7 +393,9 @@ impl WindowDecorationState {
     }
 
     pub fn managed_window_allows_render(&self) -> bool {
-        !self.managed_window.managed || (self.managed_window.visible && !self.managed_window.idle)
+        !self.managed_window.managed
+            || (self.managed_window.visible
+                && (!self.managed_window.idle || self.managed_window_animation_active))
     }
 
     pub fn managed_window_allows_render_on_output(&self, output_name: &str) -> bool {
@@ -1284,6 +1291,7 @@ impl ShojiWM {
         if !had_any_existing {
             self.reset_managed_window_animation_state_to_static(&window_id);
         }
+        self.set_managed_window_animation_active(&window_id, true);
 
         // Smooth handoff: when overriding an in-flight animation in the same
         // channel, TS-provided `from` values reflect the *declarative target*
@@ -1388,6 +1396,19 @@ impl ShojiWM {
         }
     }
 
+    fn set_managed_window_animation_active(&mut self, window_id: &str, active: bool) {
+        for (_, decoration) in self.window_decorations.iter_mut() {
+            if decoration.snapshot.id == window_id {
+                decoration.managed_window_animation_active = active;
+                break;
+            }
+        }
+
+        if let Some(closing) = self.closing_window_snapshots.get_mut(window_id) {
+            closing.decoration.managed_window_animation_active = active;
+        }
+    }
+
     pub fn cancel_managed_window_animation(&mut self, window_id: &str, channel: Option<&str>) {
         if managed_animation_debug_enabled() {
             info!(
@@ -1406,6 +1427,11 @@ impl ShojiWM {
         } else {
             self.managed_window_animations.remove(window_id);
         }
+        let active = self
+            .managed_window_animations
+            .get(window_id)
+            .is_some_and(|channels| !channels.is_empty());
+        self.set_managed_window_animation_active(window_id, active);
         self.schedule_redraw();
         self.request_tty_maintenance("managed-window-animation-cancelled");
     }
@@ -1537,6 +1563,10 @@ impl ShojiWM {
                     self.managed_window_animations.remove(&window_id);
                 }
             }
+            let animation_still_active = self
+                .managed_window_animations
+                .get(&window_id)
+                .is_some_and(|channels| !channels.is_empty());
 
             for (_, decoration) in self.window_decorations.iter_mut() {
                 if decoration.snapshot.id != window_id {
@@ -1546,6 +1576,7 @@ impl ShojiWM {
                     transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
                 let previous_transform = decoration.visual_transform;
                 decoration.managed_window = next_managed_window.clone();
+                decoration.managed_window_animation_active = animation_still_active;
                 if transform_changed {
                     decoration.visual_transform = next_managed_window.transform;
                 }
@@ -1596,6 +1627,7 @@ impl ShojiWM {
                 );
                 let previous_transform = closing.decoration.visual_transform;
                 closing.decoration.managed_window = next_managed_window.clone();
+                closing.decoration.managed_window_animation_active = animation_still_active;
                 if transform_changed {
                     closing.decoration.visual_transform = next_managed_window.transform;
                     closing.transform = next_managed_window.transform;
@@ -2027,6 +2059,7 @@ impl ShojiWM {
                         client_rect_potentially_stale: false,
                         visual_transform: static_transform,
                         managed_window: evaluation.managed_window,
+                        managed_window_animation_active: false,
                         static_visual_transform: static_transform,
                         static_managed_window: static_managed,
                         window_effects: evaluation.window_effects,
