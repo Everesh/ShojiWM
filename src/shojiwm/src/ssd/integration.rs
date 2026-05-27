@@ -2347,21 +2347,7 @@ impl ShojiWM {
                                 "runtime dirty debug: managed-window-only result"
                             );
                         }
-                        info!(
-                            window_id = %snapshot_id,
-                            old_rect = ?cached.managed_window.rect,
-                            old_visible = cached.managed_window.visible,
-                            old_idle = cached.managed_window.idle,
-                            old_opacity = cached.managed_window.transform.opacity,
-                            old_translate_y = cached.managed_window.transform.translate_y,
-                            old_animation_active = cached.managed_window_animation_active,
-                            new_rect = ?evaluation.managed_window.rect,
-                            new_visible = evaluation.managed_window.visible,
-                            new_idle = evaluation.managed_window.idle,
-                            new_opacity = evaluation.managed_window.transform.opacity,
-                            new_translate_y = evaluation.managed_window.transform.translate_y,
-                            "runtime dirty debug: managed-window overwrite"
-                        );
+
                         let has_active_animation = cached.managed_window_animation_active;
 
                         let next_managed_window = evaluation.managed_window;
