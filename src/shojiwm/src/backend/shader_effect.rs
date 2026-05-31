@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::{cmp::max, collections::HashMap, fs, io::Cursor, sync::Mutex};
 
 use png::ColorType;
@@ -160,9 +160,61 @@ pub struct StableBackdropTextureElement {
     kind: Kind,
 }
 
+thread_local! {
+    /// Shared FBO reused across every off-screen blur / blend draw on this
+    /// thread. Allocated lazily on first use, never freed — the FBO ID is
+    /// just an integer handle (no GPU memory of its own; the attached
+    /// texture is what holds the pixels), so leaking it for the program's
+    /// lifetime is essentially free.
+    ///
+    /// Background: every `blur_texture_pass` / `blend_textures` call used
+    /// to do `glGenFramebuffers` + `glDeleteFramebuffers` per draw. With
+    /// dual-Kawase blur at `passes: 2` that is 4 GL FBO lifecycle pairs
+    /// per backdrop element, and N backdrops × ≥60 fps multiplies that
+    /// pressure. On the NVIDIA proprietary driver each pair triggers a
+    /// driver-side flush + bookkeeping update — perf logs showed it as
+    /// part of the dominant `libnvidia-eglcore` busy-wait. A single
+    /// reusable scratch FBO with `glFramebufferTexture2D` re-attachment
+    /// avoids the churn entirely.
+    static BLUR_SCRATCH_FBO: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Ensures a thread-local scratch FBO exists and returns its id. Must be
+/// called from inside a GL context (`with_context`). Re-binding the FBO and
+/// re-attaching textures is the caller's responsibility.
+///
+/// # Safety
+/// The caller guarantees they hold a current GL context for the calling
+/// thread.
+#[inline]
+unsafe fn ensure_blur_scratch_fbo(gl: &smithay::backend::renderer::gles::ffi::Gles2) -> u32 {
+    BLUR_SCRATCH_FBO.with(|cell| {
+        let mut fbo = cell.get();
+        if fbo == 0 {
+            unsafe { gl.GenFramebuffers(1, &mut fbo as *mut _) };
+            cell.set(fbo);
+        }
+        fbo
+    })
+}
+
 #[derive(Debug, Default)]
 struct BackdropFramebufferCache {
     framebuffer: Option<GlesTexture>,
+    /// Persistent dual-kawase blur texture pyramid. Index 0 is the output
+    /// (same size as `framebuffer`); indices 1..passes+1 are progressively
+    /// halved intermediates used as the down/upsample ping-pong targets.
+    /// Reused across frames; only recreated when `framebuffer` is resized.
+    ///
+    /// This replaces the previous "allocate a fresh `GlesTexture` for every
+    /// down/upsample step" pattern, which was the dominant remaining
+    /// performance issue on NVIDIA proprietary — every `glTexImage2D` /
+    /// `glGenTextures` against this driver triggers device-memory
+    /// allocator activity plus a pipeline sync, and we were issuing
+    /// `passes * 2 = 4` of them per backdrop per frame. niri's `Blur`
+    /// avoids this by keeping the pyramid alive across frames (see
+    /// `misc/niri/src/render_helpers/blur.rs` `prepare_textures`).
+    blur_pyramid: Vec<GlesTexture>,
     blurred: Option<GlesTexture>,
     sample_src: Option<Rectangle<f64, Buffer>>,
 }
@@ -510,6 +562,11 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             .expect("framebuffer texture should exist")
             .clone();
 
+        // Reuse the thread-local scratch FBO instead of `glGenFramebuffers`
+        // / `glDeleteFramebuffers` per backdrop per frame. See the
+        // `BLUR_SCRATCH_FBO` definition for why this is the perf-critical
+        // change for NVIDIA proprietary.
+        let target_tex_id = framebuffer_texture.tex_id();
         frame.with_context(|gl| unsafe {
             while gl.GetError() != ffi::NO_ERROR {}
 
@@ -517,14 +574,13 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             gl.GetIntegerv(ffi::DRAW_FRAMEBUFFER_BINDING, &mut current_fbo as *mut _);
             gl.Disable(ffi::SCISSOR_TEST);
 
-            let mut fbo = 0;
-            gl.GenFramebuffers(1, &mut fbo as *mut _);
+            let fbo = ensure_blur_scratch_fbo(gl);
             gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
             gl.FramebufferTexture2D(
                 ffi::DRAW_FRAMEBUFFER,
                 ffi::COLOR_ATTACHMENT0,
                 ffi::TEXTURE_2D,
-                framebuffer_texture.tex_id(),
+                target_tex_id,
                 0,
             );
             gl.BlitFramebuffer(
@@ -541,7 +597,6 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
             );
             gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, current_fbo as u32);
             gl.Enable(ffi::SCISSOR_TEST);
-            gl.DeleteFramebuffers(1, &fbo as *const _);
         })?;
 
         if let Some(blur) = self.shader.blur_stage() {
@@ -553,6 +608,7 @@ impl RenderElement<GlesRenderer> for StableBackdropFramebufferElement {
                 (size.w, size.h),
                 blur.radius,
                 blur.passes,
+                Some(&mut inner.blur_pyramid),
             ) {
                 Ok(texture) => inner.blurred = Some(texture),
                 Err(err) => warn!(?err, "failed to preblur backdrop framebuffer"),
@@ -1842,9 +1898,17 @@ fn run_effect_pipeline(
             EffectStage::Noise(noise) => {
                 apply_noise_stage(renderer, current, current_size, noise.clone())?
             }
-            EffectStage::DualKawaseBlur(blur) => {
-                preblur_backdrop_texture(renderer, current, current_size, blur.radius, blur.passes)?
-            }
+            EffectStage::DualKawaseBlur(blur) => preblur_backdrop_texture(
+                renderer,
+                current,
+                current_size,
+                blur.radius,
+                blur.passes,
+                // No persistent cache available from the generic pipeline path; falls
+                // back to per-pass texture allocation. Hot per-window backdrops use
+                // BackdropFramebufferCache::blur_pyramid via capture_framebuffer.
+                None,
+            )?,
             EffectStage::Shader(shader) => {
                 if let Some(region) = pending_sample_region.take() {
                     let target_size = output_size
@@ -2038,8 +2102,7 @@ fn apply_blend_stage(
         gl.Disable(ffi::SCISSOR_TEST);
         gl.ActiveTexture(ffi::TEXTURE0);
 
-        let mut fbo = 0;
-        gl.GenFramebuffers(1, &mut fbo as *mut _);
+        let fbo = ensure_blur_scratch_fbo(gl);
         gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
         gl.FramebufferTexture2D(
             ffi::DRAW_FRAMEBUFFER,
@@ -2087,7 +2150,6 @@ fn apply_blend_stage(
         gl.UseProgram(0);
         gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, 0);
         gl.Enable(ffi::SCISSOR_TEST);
-        gl.DeleteFramebuffers(1, &fbo as *const _);
         Ok::<_, GlesError>(())
     })??;
 
@@ -2358,6 +2420,7 @@ pub fn preblur_backdrop_texture(
     size: (i32, i32),
     radius: i32,
     passes: i32,
+    pyramid_cache: Option<&mut Vec<GlesTexture>>,
 ) -> Result<GlesTexture, ShaderEffectError> {
     if radius <= 0 || passes <= 0 {
         return Ok(texture);
@@ -2370,6 +2433,14 @@ pub fn preblur_backdrop_texture(
         return Err(ShaderEffectError::Gles(GlesError::FramebufferBindingError));
     }
 
+    if let Some(pyramid) = pyramid_cache {
+        return preblur_using_pyramid(renderer, texture, size, &programs, passes, offset, pyramid);
+    }
+
+    // Legacy path: fresh per-pass `GlesTexture` allocation. Reserved for the
+    // generic effect pipeline (`run_effect_pipeline`) which has no place to
+    // park a persistent pyramid. Per-window backdrops go through the cached
+    // pyramid path above.
     let mut levels = Vec::with_capacity(passes + 1);
     let mut current = texture;
     let mut current_size = size;
@@ -2406,16 +2477,118 @@ pub fn preblur_backdrop_texture(
     Ok(current)
 }
 
-fn blur_texture_pass(
+/// Reuses textures held in `pyramid` across frames; only allocates on first
+/// run or when the source size changes. Texture handle layout:
+///
+/// - `pyramid[0]` — output texture, same size as `source`
+/// - `pyramid[1..=passes]` — progressively halved intermediates
+///
+/// Each render: source → pyramid[1] → … → pyramid[passes] (down) →
+/// pyramid[passes-1] → … → pyramid[0] (up).
+fn preblur_using_pyramid(
     renderer: &mut GlesRenderer,
-    texture: GlesTexture,
+    source: GlesTexture,
+    source_size: (i32, i32),
+    programs: &BlurShaderPrograms,
+    passes: usize,
+    offset: f32,
+    pyramid: &mut Vec<GlesTexture>,
+) -> Result<GlesTexture, ShaderEffectError> {
+    prepare_blur_pyramid(renderer, pyramid, source_size, passes)?;
+
+    // Down-sample chain
+    let mut current_tex = source;
+    let mut current_size = source_size;
+    for i in 1..=passes {
+        let dst_size = (max(1, current_size.0 / 2), max(1, current_size.1 / 2));
+        let dst_tex = pyramid[i].clone();
+        blur_texture_pass_into(
+            renderer,
+            &current_tex,
+            &dst_tex,
+            dst_size,
+            &programs.down,
+            [0.5f32 / dst_size.0 as f32, 0.5f32 / dst_size.1 as f32],
+            offset,
+        )?;
+        current_tex = dst_tex;
+        current_size = dst_size;
+    }
+
+    // Up-sample chain, writing back into the larger pyramid level each step.
+    // The final result lands in `pyramid[0]`.
+    for i in (0..passes).rev() {
+        let src_tex = pyramid[i + 1].clone();
+        let src_size = (src_tex.size().w, src_tex.size().h);
+        let dst_tex = pyramid[i].clone();
+        let dst_size = (dst_tex.size().w, dst_tex.size().h);
+        blur_texture_pass_into(
+            renderer,
+            &src_tex,
+            &dst_tex,
+            dst_size,
+            &programs.up,
+            [0.5f32 / src_size.0 as f32, 0.5f32 / src_size.1 as f32],
+            offset,
+        )?;
+    }
+
+    Ok(pyramid[0].clone())
+}
+
+/// Ensures `pyramid` has `passes + 1` textures sized to match the
+/// down-sample chain from `source_size`. Resets the entire pyramid when the
+/// output size (`pyramid[0]`) no longer matches, then top-up creates any
+/// missing levels. Excess levels are dropped so a `passes` decrease frees
+/// the extras.
+fn prepare_blur_pyramid(
+    renderer: &mut GlesRenderer,
+    pyramid: &mut Vec<GlesTexture>,
+    source_size: (i32, i32),
+    passes: usize,
+) -> Result<(), ShaderEffectError> {
+    if let Some(first) = pyramid.first() {
+        let first_size = first.size();
+        if (first_size.w, first_size.h) != source_size {
+            pyramid.clear();
+        }
+    }
+
+    let mut w = source_size.0;
+    let mut h = source_size.1;
+    for i in 0..=passes {
+        let level_size = (w.max(1), h.max(1));
+        if i >= pyramid.len() {
+            let texture = <GlesRenderer as Offscreen<GlesTexture>>::create_buffer(
+                renderer,
+                Fourcc::Abgr8888,
+                level_size.into(),
+            )?;
+            pyramid.push(texture);
+        }
+        w = max(1, w / 2);
+        h = max(1, h / 2);
+    }
+
+    pyramid.truncate(passes + 1);
+    Ok(())
+}
+
+/// Down/up-sample blur kernel that writes into a pre-allocated `target`
+/// texture. The non-cached `blur_texture_pass` is a thin wrapper that
+/// allocates `target` first then delegates here.
+fn blur_texture_pass_into(
+    renderer: &mut GlesRenderer,
+    source: &GlesTexture,
+    target: &GlesTexture,
     output_size: (i32, i32),
     program: &BlurProgramInternal,
     half_pixel: [f32; 2],
     offset: f32,
-) -> Result<GlesTexture, ShaderEffectError> {
-    let target =
-        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, output_size.into())?;
+) -> Result<(), ShaderEffectError> {
+    let source_tex_id = source.tex_id();
+    let target_tex_id = target.tex_id();
+
     renderer.with_context(|gl| unsafe {
         while gl.GetError() != ffi::NO_ERROR {}
 
@@ -2423,14 +2596,13 @@ fn blur_texture_pass(
         gl.Disable(ffi::SCISSOR_TEST);
         gl.ActiveTexture(ffi::TEXTURE0);
 
-        let mut fbo = 0;
-        gl.GenFramebuffers(1, &mut fbo as *mut _);
+        let fbo = ensure_blur_scratch_fbo(gl);
         gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbo);
         gl.FramebufferTexture2D(
             ffi::DRAW_FRAMEBUFFER,
             ffi::COLOR_ATTACHMENT0,
             ffi::TEXTURE_2D,
-            target.tex_id(),
+            target_tex_id,
             0,
         );
 
@@ -2452,7 +2624,7 @@ fn blur_texture_pass(
             vertices.as_ptr().cast(),
         );
 
-        gl.BindTexture(ffi::TEXTURE_2D, texture.tex_id());
+        gl.BindTexture(ffi::TEXTURE_2D, source_tex_id);
         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
         gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
         gl.TexParameteri(
@@ -2469,8 +2641,32 @@ fn blur_texture_pass(
 
         gl.DisableVertexAttribArray(program.attrib_vert as u32);
         gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, 0);
-        gl.DeleteFramebuffers(1, &fbo as *const _);
     })?;
 
+    Ok(())
+}
+
+fn blur_texture_pass(
+    renderer: &mut GlesRenderer,
+    texture: GlesTexture,
+    output_size: (i32, i32),
+    program: &BlurProgramInternal,
+    half_pixel: [f32; 2],
+    offset: f32,
+) -> Result<GlesTexture, ShaderEffectError> {
+    // Legacy allocate-then-draw path used by the generic effect pipeline.
+    // The hot per-window backdrop path reuses textures via
+    // `blur_texture_pass_into` directly.
+    let target =
+        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, output_size.into())?;
+    blur_texture_pass_into(
+        renderer,
+        &texture,
+        &target,
+        output_size,
+        program,
+        half_pixel,
+        offset,
+    )?;
     Ok(target)
 }

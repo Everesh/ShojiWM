@@ -107,6 +107,11 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
         position: "auto",
         scale: 1.5,
     };
+    display["DP-1"] = {
+        resolution: "best",
+        position: "auto",
+        scale: 1.5,
+    };
     display["DP-4"] = {
         resolution: "best",
         position: "auto",
@@ -206,7 +211,8 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
         input: backdropSource(),
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
-            dualKawaseBlur({ radius: 2, passes: 2 }),
+            dualKawaseBlur({ radius: 4, passes: 2 }),
+            /*
             shaderStage(loadShader("./src/liquid-glass.frag"), {
                 uniforms: {
                     glass_radius_px: 10.0,
@@ -215,7 +221,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
                     chromatic_shift_px: 3.0,
                     glass_tint: 0.9,
                 },
-            }),
+            }),*/
         ],
     });
 
@@ -223,7 +229,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
         input: backdropSource(),
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
-            dualKawaseBlur({ radius: 2, passes: 2 }),
+            dualKawaseBlur({ radius: 4, passes: 2 }),
         ],
     });
 

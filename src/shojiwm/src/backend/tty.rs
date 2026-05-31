@@ -80,17 +80,20 @@ const CLEAR_COLOR: [f32; 4] = [0.08, 0.10, 0.13, 1.0];
 // Keep hardware cursor updates on the cursor plane, but force window/layer content through
 // the compositor for now.
 //
-// Smithay's `FrameFlags::DEFAULT` includes overlay-plane scanout. That is attractive in theory,
-// but in practice overlay assignment can interact poorly with buffer lifetime/presentation timing
-// on some drivers. Keeping this explicit makes the tradeoff visible and avoids accidentally
-// re-enabling overlays if Smithay's default changes.
+// Scanout flags now match niri's default: primary + overlay + cursor plane
+// scanout all enabled. The `_ANY` variant for primary scanout lets DRM pick
+// the plane regardless of pixel format match, which matches what niri does
+// (see `misc/niri/src/backend/tty.rs`).
 //
-// Primary-plane direct scanout is also intentionally disabled until fullscreen rendering has a
-// strict, compositor-owned bypass path. Shoji can now place compositor-owned layers, SSD, and
-// window effects around a client surface; allowing an arbitrary client buffer to replace the
-// composed primary plane can produce a one-frame mismatch where only the scanout candidate is
-// visible while the surrounding compositor elements disappear.
-const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+// The earlier worry that primary scanout would skip our SSD/decorations is
+// handled by smithay's `DrmCompositor`: plane assignment only picks the
+// primary plane when a single element can realize the whole frame, i.e.
+// nothing else (no decorations, no layer-shell, no shader effects) needs to
+// be drawn on top. Multi-element frames fall back to the GL compositing
+// path automatically, so decorations cannot disappear under this flag.
+const TTY_FRAME_FLAGS: FrameFlags = FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
+    .union(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT)
+    .union(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
 
 fn frame_liveness_debug_enabled() -> bool {
     std::env::var_os("SHOJI_FRAME_LIVENESS_DEBUG")
