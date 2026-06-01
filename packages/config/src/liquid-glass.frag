@@ -13,6 +13,12 @@ float sdf(vec2 p, vec2 b, float r) {
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
 }
 
+vec2 safeNormalize(vec2 value) {
+    float scale = max(max(abs(value.x), abs(value.y)), 0.0001);
+    vec2 scaled = value / scale;
+    return scaled / max(length(scaled), 0.0001);
+}
+
 vec3 getTextureColorAt(vec2 coord, vec2 rect_size) {
     vec2 sample_uv = clamp(coord / max(rect_size, vec2(1.0)), vec2(0.0), vec2(1.0));
     return texture2D(tex, sample_uv).rgb;
@@ -28,16 +34,20 @@ vec4 shader_main(vec2 uv, vec2 rect_size) {
     vec2 glassCoord = fragCoord - glassCenter;
 
     float size = max(min(glassSize.x, glassSize.y), 1.0);
-    float inversedSDF = -sdf(glassCoord, glassSize * 0.5, glass_radius_px) / size;
+    // Keep squared values inside mediump range. Some drivers evaluate length()
+    // with 16-bit intermediates while others silently promote them.
+    float sdfScale = max(max(glassSize.x, glassSize.y), 1.0);
+    float inversedSDF = -sdf(
+        glassCoord / sdfScale,
+        glassSize * 0.5 / sdfScale,
+        glass_radius_px / sdfScale
+    ) * sdfScale / size;
 
     if (inversedSDF < 0.0) {
         return vec4(getTextureColorAt(fragCoord, rect_size), 1.0);
     }
 
-    float coordLen = length(glassCoord);
-    vec2 normalizedGlassCoord = coordLen > 0.0001
-        ? glassCoord / coordLen
-        : vec2(0.0, 0.0);
+    vec2 normalizedGlassCoord = safeNormalize(glassCoord);
     float distFromCenter = 1.0 - clamp(inversedSDF / max(distortion_depth, 0.0001), 0.0, 1.0);
     float distortion = 1.0 - sqrt(max(1.0 - pow(distFromCenter, 2.0), 0.0));
     vec2 offset = distortion * normalizedGlassCoord * glassSize * 0.5 * distortion_strength;

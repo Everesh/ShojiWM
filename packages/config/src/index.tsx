@@ -212,7 +212,6 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
         invalidate: { kind: "on-source-damage-box", antiArtifactMargin: 8 },
         pipeline: [
             dualKawaseBlur({ radius: 4, passes: 2 }),
-            /*
             shaderStage(loadShader("./src/liquid-glass.frag"), {
                 uniforms: {
                     glass_radius_px: 10.0,
@@ -221,7 +220,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
                     chromatic_shift_px: 3.0,
                     glass_tint: 0.9,
                 },
-            }),*/
+            }),
         ],
     });
 

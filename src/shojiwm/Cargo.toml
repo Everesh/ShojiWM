@@ -8,12 +8,12 @@ bitflags = "2.11.0"
 thiserror = "2.0.12"
 smithay = {
     git = "https://github.com/bea4dev/smithay.git",
-    branch = "fix-xwayland-multi-monitor",
+    branch = "shojiwm",
     features = ["use_system_lib", "xwayland"]
 }
 smithay-drm-extras = {
     git = "https://github.com/bea4dev/smithay.git",
-    branch = "fix-xwayland-multi-monitor",
+    branch = "shojiwm",
     package = "smithay-drm-extras",
     default-features = false
 }
