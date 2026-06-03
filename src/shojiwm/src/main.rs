@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 pub mod activation_environment;
 pub mod backend;
 pub mod config;
+pub mod config_error;
 pub mod cursor;
 pub mod drawing;
 pub mod foreign_toplevel;

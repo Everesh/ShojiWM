@@ -496,7 +496,7 @@ pub fn text_elements_for_decoration(
         .collect()
 }
 
-fn memory_text_element(
+pub(crate) fn memory_text_element(
     renderer: &mut GlesRenderer,
     label: &CachedDecorationLabel,
     root_rect: LogicalRect,

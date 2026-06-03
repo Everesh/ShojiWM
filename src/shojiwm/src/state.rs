@@ -91,11 +91,12 @@ use crate::runtime_process::{
     kill_runtime_service, should_restart_service, spawn_runtime_process,
 };
 use crate::ssd::{
-    BackgroundEffectConfig, DecorationEvaluator, DecorationInteractionSnapshot,
-    DecorationInteractionTarget, DecorationPointerMoveAsyncInvocation, DecorationRuntimeEvaluator,
-    LogicalPoint, LogicalRect, ManagedWindowAnimationSnapshot, NodeDecorationEvaluator,
-    OutputModeSnapshot, OutputPositionSnapshot, RuntimeEventConfigUpdate, WaylandOutputSnapshot,
-    WaylandWindowSnapshot, WindowDecorationState, WindowPositionSnapshot,
+    BackgroundEffectConfig, DecorationEvaluator, DecorationHandlerInvocation,
+    DecorationInteractionSnapshot, DecorationInteractionTarget,
+    DecorationPointerMoveAsyncInvocation, DecorationRuntimeEvaluator, LogicalPoint, LogicalRect,
+    ManagedWindowAnimationSnapshot, NodeDecorationEvaluator, OutputModeSnapshot,
+    OutputPositionSnapshot, RuntimeEventConfigUpdate, WaylandOutputSnapshot, WaylandWindowSnapshot,
+    WindowDecorationState, WindowPositionSnapshot,
 };
 use crate::xwayland_satellite::{SatelliteInstance, satellite_requested, spawn_satellite};
 use crate::{
@@ -297,6 +298,7 @@ pub struct ShojiWM {
     pub async_asset_dirty: bool,
     pub configured_background_effect: Option<BackgroundEffectConfig>,
     pub configured_layer_effects: HashMap<String, BackgroundEffectConfig>,
+    pub config_error_report: Option<crate::config_error::ConfigErrorReport>,
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
     pub layer_framebuffer_effect_states:
         HashMap<String, crate::backend::shader_effect::ShaderEffectElementState>,
@@ -601,21 +603,21 @@ impl ShojiWM {
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
-        let (decoration_evaluator, configured_background_effect) =
+        let (decoration_evaluator, config_error_report) =
             if std::path::Path::new("node_modules/.bin/tsx").exists() {
                 let evaluator =
                     NodeDecorationEvaluator::for_workspace("packages/config/src/index.tsx")
                         .with_working_dir(std::env::current_dir().unwrap_or_else(|_| ".".into()));
-                let configured_background_effect = match evaluator.background_effect_config() {
-                    Ok(config) => config,
+                let config_error_report = match evaluator.preload() {
+                    Ok(()) => None,
                     Err(error) => {
-                        warn!(?error, "failed to load configured background effect");
-                        None
+                        warn!(?error, "failed to preload TypeScript config");
+                        Some(crate::config_error::ConfigErrorReport::initial_load(error))
                     }
                 };
                 (
                     DecorationRuntimeEvaluator::Node(evaluator),
-                    configured_background_effect,
+                    config_error_report,
                 )
             } else {
                 (DecorationRuntimeEvaluator::Static(Default::default()), None)
@@ -695,7 +697,7 @@ impl ShojiWM {
             })
             .expect("Failed to init async asset worker.");
 
-        Self {
+        let state = Self {
             start_time,
             display_handle: dh,
 
@@ -783,8 +785,9 @@ impl ShojiWM {
             current_keyboard_modifiers: ModifiersState::default(),
             suggested_window_offset: None,
             async_asset_dirty: false,
-            configured_background_effect,
+            configured_background_effect: None,
             configured_layer_effects: HashMap::new(),
+            config_error_report,
             layer_backdrop_cache: HashMap::new(),
             layer_framebuffer_effect_states: HashMap::new(),
             pointer_contents: PointerContents::default(),
@@ -831,7 +834,9 @@ impl ShojiWM {
             xdisplay: None,
             xwayland_satellite: None,
             xwayland_refresh_override_mhz: Arc::new(AtomicI32::new(0)),
-        }
+        };
+
+        state
     }
 
     pub fn create_output_global(
@@ -1210,6 +1215,9 @@ impl ShojiWM {
                     Ok(tick) => tick,
                     Err(error) => {
                         debug!(?error, "failed to tick decoration runtime scheduler");
+                        state.config_error_report =
+                            Some(crate::config_error::ConfigErrorReport::runtime(error));
+                        state.schedule_redraw();
                         state.runtime_scheduler_enabled = false;
                         return TimeoutAction::ToDuration(Duration::from_millis(250));
                     }
@@ -1302,6 +1310,112 @@ impl ShojiWM {
 
         let _ = self.decoration_evaluator.window_closed(&snapshot.id);
         debug!(window_id = snapshot.id, "warmed up decoration runtime");
+    }
+
+    pub fn reload_decoration_runtime(&mut self) {
+        let Some(current) = self.decoration_evaluator.as_node() else {
+            self.config_error_report = Some(crate::config_error::ConfigErrorReport::hot_reload(
+                "hot reload is only available for the TypeScript runtime",
+            ));
+            self.schedule_redraw();
+            return;
+        };
+
+        self.sync_runtime_display_state();
+        let persisted = match current.lifecycle_disable("reload") {
+            Ok(state) => state,
+            Err(error) => {
+                warn!(?error, "failed to collect runtime reload state");
+                serde_json::Value::Object(Default::default())
+            }
+        };
+
+        let next = current.fresh_like();
+        if let Err(error) =
+            next.lifecycle_enable("reload", Some(&persisted))
+                .and_then(|invocation| {
+                    self.consume_runtime_lifecycle_invocation(invocation);
+                    Ok(())
+                })
+        {
+            warn!(?error, "failed to hot reload TypeScript config");
+            self.config_error_report =
+                Some(crate::config_error::ConfigErrorReport::hot_reload(error));
+            self.schedule_redraw();
+            return;
+        }
+
+        match next.background_effect_config() {
+            Ok(config) => {
+                self.configured_background_effect = config;
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "failed to load hot-reloaded background effect config"
+                );
+                self.config_error_report =
+                    Some(crate::config_error::ConfigErrorReport::hot_reload(error));
+                self.schedule_redraw();
+                return;
+            }
+        }
+
+        self.decoration_evaluator = DecorationRuntimeEvaluator::Node(next);
+        self.config_error_report = None;
+        self.runtime_poll_dirty = true;
+        let live_window_ids = self
+            .space
+            .elements()
+            .map(|window| self.snapshot_window(window).id)
+            .collect::<Vec<_>>();
+        self.runtime_dirty_window_ids.extend(live_window_ids);
+        self.configured_layer_effects.clear();
+        self.request_tty_maintenance("config-hot-reload");
+        self.schedule_redraw();
+        info!("hot reloaded TypeScript config");
+    }
+
+    pub fn enable_initial_decoration_runtime(&mut self) {
+        self.sync_runtime_display_state();
+        let lifecycle_result = match self.decoration_evaluator.as_node() {
+            Some(evaluator) => evaluator.lifecycle_enable("initial", None),
+            None => return,
+        };
+        match lifecycle_result {
+            Ok(invocation) => {
+                self.consume_runtime_lifecycle_invocation(invocation);
+            }
+            Err(error) => {
+                warn!(?error, "failed to run initial config lifecycle");
+                self.config_error_report =
+                    Some(crate::config_error::ConfigErrorReport::initial_load(error));
+                self.schedule_redraw();
+                return;
+            }
+        }
+
+        let background_effect_result = match self.decoration_evaluator.as_node() {
+            Some(evaluator) => evaluator.background_effect_config(),
+            None => return,
+        };
+        match background_effect_result {
+            Ok(config) => {
+                self.configured_background_effect = config;
+            }
+            Err(error) => {
+                warn!(?error, "failed to load configured background effect");
+                self.config_error_report =
+                    Some(crate::config_error::ConfigErrorReport::initial_load(error));
+                self.schedule_redraw();
+                return;
+            }
+        }
+
+        self.config_error_report = None;
+        self.runtime_poll_dirty = true;
+        self.request_tty_maintenance("config-initial-load");
+        self.schedule_redraw();
     }
 
     pub fn snapshot_outputs(&self) -> std::collections::BTreeMap<String, WaylandOutputSnapshot> {
@@ -1554,6 +1668,20 @@ impl ShojiWM {
     pub fn consume_runtime_event_config(&mut self, update: Option<RuntimeEventConfigUpdate>) {
         if let Some(update) = update {
             self.apply_runtime_event_config_update(update);
+        }
+    }
+
+    pub fn consume_runtime_lifecycle_invocation(
+        &mut self,
+        invocation: DecorationHandlerInvocation,
+    ) {
+        self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_key_binding_config(invocation.key_binding_config);
+        self.consume_runtime_pointer_config(invocation.pointer_config);
+        self.consume_runtime_event_config(invocation.event_config);
+        self.consume_runtime_process_config(invocation.process_config);
+        if !invocation.process_actions.is_empty() {
+            self.apply_runtime_process_actions(invocation.process_actions);
         }
     }
 

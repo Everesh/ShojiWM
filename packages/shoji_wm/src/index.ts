@@ -110,6 +110,7 @@ import type {
   KeyBindingOptions,
   KeyBindingEventPhase,
   PointerController,
+  PreloadController,
   RuntimeController,
   DebugController,
   SSDRebuildSuppressionHandle,
@@ -117,10 +118,7 @@ import type {
   SSDRebuildSuppressionViolationPolicy,
 } from "./types";
 import { createWindowManagerEventController } from "./events";
-import {
-  suppressSSDRebuild,
-  withSSDRebuildSuppressed,
-} from "./runtime-hooks";
+import { suppressSSDRebuild, withSSDRebuildSuppressed } from "./runtime-hooks";
 import {
   KEY_BINDING_CONTROLLER,
   beginKeyBindingRegistration,
@@ -146,7 +144,10 @@ import {
   takePendingProcessConfig,
 } from "./process";
 import { createElementNode } from "./runtime";
-import { computed as createComputedSignal, isSignal as isReadonlySignal } from "./signals";
+import {
+  computed as createComputedSignal,
+  isSignal as isReadonlySignal,
+} from "./signals";
 import { resolveAssetPath } from "./shader";
 import { serializeCompositionTree } from "./serialize";
 export {
@@ -204,6 +205,13 @@ export {
   createWindowManagerEventController,
   type LayerCreateListener,
   type LayerDestroyListener,
+  type LayerUpdateListener,
+  type RuntimeDisableEvent,
+  type RuntimeDisableListener,
+  type RuntimeEnableEvent,
+  type RuntimeEnableListener,
+  type RuntimeLifecycleReason,
+  type RuntimePersistedState,
   type WindowCloseListener,
   type WindowFirstCommitListener,
   type WindowFocusListener,
@@ -456,13 +464,17 @@ export type {
   KeyBindingOptions,
   KeyBindingEventPhase,
   PointerController,
+  PreloadController,
   RuntimeController,
   DebugController,
   SSDRebuildSuppressionHandle,
   SSDRebuildSuppressionOptions,
   SSDRebuildSuppressionViolationPolicy,
 } from "./types";
-export { CompositionSerializationError, serializeCompositionTree } from "./serialize";
+export {
+  CompositionSerializationError,
+  serializeCompositionTree,
+} from "./serialize";
 
 export type CompositionNode = CompositionChild;
 
@@ -487,11 +499,15 @@ export function Image(props: ImageProps) {
         : src;
   return ImageIntrinsic({ ...props, src: resolved });
 }
-export const ShaderEffect = defineIntrinsicComponent<ShaderEffectProps>("ShaderEffect");
-export const ManagedWindow = defineIntrinsicComponent<ManagedWindowProps>("ManagedWindow");
-export const ClientWindow = defineIntrinsicComponent<ClientWindowProps>("Window");
+export const ShaderEffect =
+  defineIntrinsicComponent<ShaderEffectProps>("ShaderEffect");
+export const ManagedWindow =
+  defineIntrinsicComponent<ManagedWindowProps>("ManagedWindow");
+export const ClientWindow =
+  defineIntrinsicComponent<ClientWindowProps>("Window");
 export const Window = ClientWindow;
-export const WindowBorder = defineIntrinsicComponent<WindowBorderProps>("WindowBorder");
+export const WindowBorder =
+  defineIntrinsicComponent<WindowBorderProps>("WindowBorder");
 
 const WINDOW_CONTROLLER: WindowManagerWindowController = {
   composition: null,
@@ -505,11 +521,20 @@ const RUNTIME_CONTROLLER: RuntimeController = {
   withSSDRebuildSuppressed,
 };
 
+const PRELOAD_CONTROLLER: PreloadController = {};
+
 /**
  * Placeholder namespace for future WM-level entrypoints.
  */
 export const WINDOW_MANAGER: WindowManagerDefinition = {
   event: createWindowManagerEventController(),
+  onEnable(listener) {
+    return this.event.onEnable(listener);
+  },
+  onDisable(listener) {
+    return this.event.onDisable(listener);
+  },
+  preload: PRELOAD_CONTROLLER,
   effect: {
     background_effect: null,
   },
@@ -523,9 +548,7 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   debug: DEBUG_CONTROLLER,
 };
 
-export function windowAction(
-  action: WindowActionType,
-): WindowActionDescriptor {
+export function windowAction(action: WindowActionType): WindowActionDescriptor {
   return {
     kind: "window-action",
     action,

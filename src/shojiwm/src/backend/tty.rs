@@ -1342,6 +1342,8 @@ fn render_surface(
             screencopy_state,
             image_copy_capture_pending,
             fps_counter,
+            text_rasterizer,
+            config_error_report,
             ..
         } = state;
 
@@ -4091,6 +4093,27 @@ fn render_surface(
         // FPS overlay: pre-rasterized glyph buffers composed at the top-left
         // of this output. Built before render_frame so it sits in the
         // top-most position (smithay treats index 0 as front-most).
+        let error_text_elements: Vec<TtyRenderElements> =
+            crate::config_error::text_elements_for_output(
+                &mut backend.renderer,
+                text_rasterizer,
+                config_error_report.as_ref(),
+                output_geo,
+                scale,
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .map(TtyRenderElements::Text)
+            .collect();
+        let error_background_elements: Vec<TtyRenderElements> =
+            crate::config_error::background_elements_for_output(
+                config_error_report.as_ref(),
+                output_geo,
+                scale,
+            )
+            .into_iter()
+            .map(TtyRenderElements::Blink)
+            .collect();
         let fps_overlay_elements: Vec<TtyRenderElements> = fps_counter
             .render_elements(
                 &mut backend.renderer,
@@ -4105,8 +4128,14 @@ fn render_surface(
         // After capture has run against the cursor / content slices by
         // reference, move them into a single element list for the DRM render.
         let mut elements: Vec<TtyRenderElements> = Vec::with_capacity(
-            fps_overlay_elements.len() + cursor_elements.len() + content_for_capture.len(),
+            error_text_elements.len()
+                + error_background_elements.len()
+                + fps_overlay_elements.len()
+                + cursor_elements.len()
+                + content_for_capture.len(),
         );
+        elements.extend(error_text_elements);
+        elements.extend(error_background_elements);
         elements.extend(fps_overlay_elements);
         elements.extend(cursor_elements);
         elements.extend(content_for_capture);

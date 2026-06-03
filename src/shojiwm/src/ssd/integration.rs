@@ -123,6 +123,16 @@ fn managed_animation_debug_enabled() -> bool {
     })
 }
 
+fn hot_reload_debug_enabled() -> bool {
+    use std::sync::OnceLock;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SHOJI_HOT_RELOAD_DEBUG")
+            .is_some_and(|value| value != "0" && !value.is_empty())
+    })
+}
+
 fn label_debug_enabled() -> bool {
     use std::sync::OnceLock;
 
@@ -648,6 +658,13 @@ impl DecorationRuntimeEvaluator {
     ) {
         if let Self::Node(evaluator) = self {
             evaluator.set_async_event_sender(sender);
+        }
+    }
+
+    pub fn as_node(&self) -> Option<&super::NodeDecorationEvaluator> {
+        match self {
+            Self::Node(evaluator) => Some(evaluator),
+            Self::Static(_) => None,
         }
     }
 }
@@ -1338,6 +1355,16 @@ impl ShojiWM {
     ) -> Vec<crate::ssd::RuntimeWindowAction> {
         let mut deferred = Vec::with_capacity(actions.len());
         for action in actions {
+            if hot_reload_debug_enabled() {
+                info!(
+                    window_id = %action.window_id,
+                    action = ?action.action,
+                    channel = ?action.channel,
+                    animation_channel = ?action.animation.as_ref().map(|animation| animation.channel.as_str()),
+                    rect = ?action.animation.as_ref().and_then(|animation| animation.rect.as_ref()),
+                    "hot reload: pre-advance window action"
+                );
+            }
             match action.action {
                 crate::ssd::WaylandWindowAction::ScheduleAnimation => {
                     if let Some(animation) = action.animation {
@@ -1369,7 +1396,7 @@ impl ShojiWM {
             .managed_window_animations
             .get(&window_id)
             .is_some_and(|channels| !channels.is_empty());
-        if managed_animation_debug_enabled() {
+        if managed_animation_debug_enabled() || hot_reload_debug_enabled() {
             let had_existing = self
                 .managed_window_animations
                 .get(&window_id)
@@ -1379,6 +1406,7 @@ impl ShojiWM {
                 window_id = %window_id,
                 channel = %channel,
                 started_at_ms,
+                had_any_existing,
                 had_existing,
                 rect = ?animation.rect,
                 offset = ?animation.offset,
@@ -1474,7 +1502,7 @@ impl ShojiWM {
         let mut just_scheduled = std::collections::HashSet::new();
         just_scheduled.insert(inserted_window_id.clone());
         self.apply_managed_window_rects(&just_scheduled);
-        if managed_animation_debug_enabled()
+        if (managed_animation_debug_enabled() || hot_reload_debug_enabled())
             && let Some(post) = self.window_decorations.iter().find_map(|(_, d)| {
                 (d.snapshot.id == inserted_window_id).then(|| {
                     (
@@ -1502,6 +1530,7 @@ impl ShojiWM {
     }
 
     fn reset_managed_window_animation_state_to_static(&mut self, window_id: &str) {
+        let mut reset_live = false;
         for (_, decoration) in self.window_decorations.iter_mut() {
             if decoration.snapshot.id != window_id {
                 continue;
@@ -1521,9 +1550,11 @@ impl ShojiWM {
                     next_root,
                 );
             }
+            reset_live = true;
             break;
         }
 
+        let mut reset_closing = false;
         if let Some(closing) = self.closing_window_snapshots.get_mut(window_id) {
             let previous_root = transformed_root_rect(
                 closing.decoration.layout.root.rect,
@@ -1546,6 +1577,16 @@ impl ShojiWM {
                     next_root,
                 );
             }
+            reset_closing = true;
+        }
+
+        if hot_reload_debug_enabled() {
+            info!(
+                window_id,
+                reset_live,
+                reset_closing,
+                "hot reload: reset managed animation state to static"
+            );
         }
     }
 
@@ -1563,10 +1604,14 @@ impl ShojiWM {
     }
 
     pub fn cancel_managed_window_animation(&mut self, window_id: &str, channel: Option<&str>) {
-        if managed_animation_debug_enabled() {
+        if managed_animation_debug_enabled() || hot_reload_debug_enabled() {
             info!(
                 window_id,
                 channel = ?channel,
+                before_channels = ?self
+                    .managed_window_animations
+                    .get(window_id)
+                    .map(|channels| channels.keys().cloned().collect::<Vec<_>>()),
                 "managed animation: cancel"
             );
         }
@@ -1585,6 +1630,22 @@ impl ShojiWM {
             .get(window_id)
             .is_some_and(|channels| !channels.is_empty());
         self.set_managed_window_animation_active(window_id, active);
+        if !active {
+            self.reset_managed_window_animation_state_to_static(window_id);
+        }
+        if hot_reload_debug_enabled() {
+            info!(
+                window_id,
+                channel = ?channel,
+                active,
+                after_channels = ?self
+                    .managed_window_animations
+                    .get(window_id)
+                    .map(|channels| channels.keys().cloned().collect::<Vec<_>>()),
+                reset_to_static = !active,
+                "hot reload: managed animation cancel applied"
+            );
+        }
         self.schedule_redraw();
         self.request_tty_maintenance("managed-window-animation-cancelled");
     }

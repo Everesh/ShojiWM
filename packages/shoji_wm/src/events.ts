@@ -4,10 +4,34 @@ export type WindowOpenListener = (window: WaylandWindow) => void;
 export type WindowInitialConfigureListener = (window: WaylandWindow) => void;
 export type WindowFirstCommitListener = (window: WaylandWindow) => void;
 export type WindowCloseListener = (window: WaylandWindow) => void;
-export type WindowFocusListener = (window: WaylandWindow, focused: boolean) => void;
+export type WindowFocusListener = (
+  window: WaylandWindow,
+  focused: boolean,
+) => void;
 export type WindowStartCloseListener = (window: WaylandWindow) => void;
 export type LayerCreateListener = (layer: WaylandLayer) => void;
+export type LayerUpdateListener = (layer: WaylandLayer) => void;
 export type LayerDestroyListener = (layer: WaylandLayer) => void;
+export type RuntimeLifecycleReason = "initial" | "reload" | "shutdown";
+
+export type RuntimePersistedState = Record<string, unknown>;
+
+export interface RuntimeEnableEvent {
+  readonly reason: Extract<RuntimeLifecycleReason, "initial" | "reload">;
+  readonly isReloading: boolean;
+  restore<T>(key: string): T | undefined;
+  has(key: string): boolean;
+}
+
+export interface RuntimeDisableEvent {
+  readonly reason: Extract<RuntimeLifecycleReason, "reload" | "shutdown">;
+  readonly isReloading: boolean;
+  persist<T>(key: string, value: T): void;
+  delete(key: string): void;
+}
+
+export type RuntimeEnableListener = (event: RuntimeEnableEvent) => void;
+export type RuntimeDisableListener = (event: RuntimeDisableEvent) => void;
 
 export interface WindowResizeEdges {
   left: boolean;
@@ -81,8 +105,16 @@ export type WindowMoveListener = (event: WindowMoveEvent) => void;
 
 export type RuntimeWindowMoveEvent = Omit<WindowMoveEvent, "window">;
 
-export type WindowStateRequestSource = "api" | "client-csd" | "xwayland" | "keybind";
-export type WindowActivateRequestSource = "api" | "xdg-activation" | "xwayland" | "keybind";
+export type WindowStateRequestSource =
+  | "api"
+  | "client-csd"
+  | "xwayland"
+  | "keybind";
+export type WindowActivateRequestSource =
+  | "api"
+  | "xdg-activation"
+  | "xwayland"
+  | "keybind";
 
 export interface WindowMaximizeRequestEvent {
   window: WaylandWindow;
@@ -91,9 +123,14 @@ export interface WindowMaximizeRequestEvent {
   timestamp: number;
 }
 
-export type WindowMaximizeRequestListener = (event: WindowMaximizeRequestEvent) => void;
+export type WindowMaximizeRequestListener = (
+  event: WindowMaximizeRequestEvent,
+) => void;
 
-export type RuntimeWindowMaximizeRequestEvent = Omit<WindowMaximizeRequestEvent, "window">;
+export type RuntimeWindowMaximizeRequestEvent = Omit<
+  WindowMaximizeRequestEvent,
+  "window"
+>;
 
 export interface WindowMinimizeRequestEvent {
   window: WaylandWindow;
@@ -102,9 +139,14 @@ export interface WindowMinimizeRequestEvent {
   timestamp: number;
 }
 
-export type WindowMinimizeRequestListener = (event: WindowMinimizeRequestEvent) => void;
+export type WindowMinimizeRequestListener = (
+  event: WindowMinimizeRequestEvent,
+) => void;
 
-export type RuntimeWindowMinimizeRequestEvent = Omit<WindowMinimizeRequestEvent, "window">;
+export type RuntimeWindowMinimizeRequestEvent = Omit<
+  WindowMinimizeRequestEvent,
+  "window"
+>;
 
 export interface WindowActivateRequestEvent {
   window: WaylandWindow;
@@ -112,9 +154,14 @@ export interface WindowActivateRequestEvent {
   timestamp: number;
 }
 
-export type WindowActivateRequestListener = (event: WindowActivateRequestEvent) => void;
+export type WindowActivateRequestListener = (
+  event: WindowActivateRequestEvent,
+) => void;
 
-export type RuntimeWindowActivateRequestEvent = Omit<WindowActivateRequestEvent, "window">;
+export type RuntimeWindowActivateRequestEvent = Omit<
+  WindowActivateRequestEvent,
+  "window"
+>;
 
 export interface PointerMovePoint {
   x: number;
@@ -136,14 +183,17 @@ export interface PointerMoveEvent {
   timestamp: number;
 }
 
-export type PointerMoveAsyncListener =
-  (event: PointerMoveEvent) => void | Promise<void>;
+export type PointerMoveAsyncListener = (
+  event: PointerMoveEvent,
+) => void | Promise<void>;
 
 export interface RuntimeEventConfig {
   pointerMoveAsync: boolean;
 }
 
 export interface WindowManagerEventController {
+  onEnable(listener: RuntimeEnableListener): () => void;
+  onDisable(listener: RuntimeDisableListener): () => void;
   onOpen(listener: WindowOpenListener): () => void;
   onInitialConfigure(listener: WindowInitialConfigureListener): () => void;
   onFirstCommit(listener: WindowFirstCommitListener): () => void;
@@ -157,6 +207,7 @@ export interface WindowManagerEventController {
   onWindowActivateRequest(listener: WindowActivateRequestListener): () => void;
   onPointerMoveAsync(listener: PointerMoveAsyncListener): () => void;
   onCreateLayer(listener: LayerCreateListener): () => void;
+  onUpdateLayer(listener: LayerUpdateListener): () => void;
   onDestroyLayer(listener: LayerDestroyListener): () => void;
   emitOpen(window: WaylandWindow): void;
   emitInitialConfigure(window: WaylandWindow): void;
@@ -164,18 +215,38 @@ export interface WindowManagerEventController {
   emitClose(window: WaylandWindow): void;
   emitFocus(window: WaylandWindow, focused: boolean): void;
   emitStartClose(window: WaylandWindow): void;
-  emitWindowResize(window: WaylandWindow, event: RuntimeWindowResizeEvent): boolean;
+  emitWindowResize(
+    window: WaylandWindow,
+    event: RuntimeWindowResizeEvent,
+  ): boolean;
   emitWindowMove(window: WaylandWindow, event: RuntimeWindowMoveEvent): boolean;
-  emitWindowMaximizeRequest(window: WaylandWindow, event: RuntimeWindowMaximizeRequestEvent): boolean;
-  emitWindowMinimizeRequest(window: WaylandWindow, event: RuntimeWindowMinimizeRequestEvent): boolean;
-  emitWindowActivateRequest(window: WaylandWindow, event: RuntimeWindowActivateRequestEvent): boolean;
+  emitWindowMaximizeRequest(
+    window: WaylandWindow,
+    event: RuntimeWindowMaximizeRequestEvent,
+  ): boolean;
+  emitWindowMinimizeRequest(
+    window: WaylandWindow,
+    event: RuntimeWindowMinimizeRequestEvent,
+  ): boolean;
+  emitWindowActivateRequest(
+    window: WaylandWindow,
+    event: RuntimeWindowActivateRequestEvent,
+  ): boolean;
   emitPointerMoveAsync(event: PointerMoveEvent): Promise<boolean>;
   emitCreateLayer(layer: WaylandLayer): void;
+  emitUpdateLayer(layer: WaylandLayer): void;
   emitDestroyLayer(layer: WaylandLayer): void;
+  emitEnable(
+    reason: RuntimeEnableEvent["reason"],
+    state?: RuntimePersistedState,
+  ): void;
+  emitDisable(reason: RuntimeDisableEvent["reason"]): RuntimePersistedState;
   takePendingEventConfig(): RuntimeEventConfig | undefined;
 }
 
 export function createWindowManagerEventController(): WindowManagerEventController {
+  const enableListeners = new Set<RuntimeEnableListener>();
+  const disableListeners = new Set<RuntimeDisableListener>();
   const openListeners = new Set<WindowOpenListener>();
   const initialConfigureListeners = new Set<WindowInitialConfigureListener>();
   const firstCommitListeners = new Set<WindowFirstCommitListener>();
@@ -189,6 +260,7 @@ export function createWindowManagerEventController(): WindowManagerEventControll
   const activateRequestListeners = new Set<WindowActivateRequestListener>();
   const pointerMoveAsyncListeners = new Set<PointerMoveAsyncListener>();
   const createLayerListeners = new Set<LayerCreateListener>();
+  const updateLayerListeners = new Set<LayerUpdateListener>();
   const destroyLayerListeners = new Set<LayerDestroyListener>();
   let pendingEventConfig = false;
 
@@ -197,6 +269,14 @@ export function createWindowManagerEventController(): WindowManagerEventControll
   }
 
   return {
+    onEnable(listener) {
+      enableListeners.add(listener);
+      return () => enableListeners.delete(listener);
+    },
+    onDisable(listener) {
+      disableListeners.add(listener);
+      return () => disableListeners.delete(listener);
+    },
     onOpen(listener) {
       openListeners.add(listener);
       return () => openListeners.delete(listener);
@@ -252,6 +332,10 @@ export function createWindowManagerEventController(): WindowManagerEventControll
     onCreateLayer(listener) {
       createLayerListeners.add(listener);
       return () => createLayerListeners.delete(listener);
+    },
+    onUpdateLayer(listener) {
+      updateLayerListeners.add(listener);
+      return () => updateLayerListeners.delete(listener);
     },
     onDestroyLayer(listener) {
       destroyLayerListeners.add(listener);
@@ -346,10 +430,48 @@ export function createWindowManagerEventController(): WindowManagerEventControll
         listener(layer);
       }
     },
+    emitUpdateLayer(layer) {
+      for (const listener of updateLayerListeners) {
+        listener(layer);
+      }
+    },
     emitDestroyLayer(layer) {
       for (const listener of destroyLayerListeners) {
         listener(layer);
       }
+    },
+    emitEnable(reason, state = {}) {
+      const snapshot = { ...state };
+      const event: RuntimeEnableEvent = {
+        reason,
+        isReloading: reason === "reload",
+        restore(key) {
+          return snapshot[key] as never;
+        },
+        has(key) {
+          return Object.prototype.hasOwnProperty.call(snapshot, key);
+        },
+      };
+      for (const listener of enableListeners) {
+        listener(event);
+      }
+    },
+    emitDisable(reason) {
+      const next: RuntimePersistedState = {};
+      const event: RuntimeDisableEvent = {
+        reason,
+        isReloading: reason === "reload",
+        persist(key, value) {
+          next[key] = value;
+        },
+        delete(key) {
+          delete next[key];
+        },
+      };
+      for (const listener of disableListeners) {
+        listener(event);
+      }
+      return next;
     },
     takePendingEventConfig() {
       if (!pendingEventConfig) {

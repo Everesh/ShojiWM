@@ -733,6 +733,23 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "displayState")]
         display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
     },
+    LifecycleEnable {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        reason: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<&'a serde_json::Value>,
+        environment: &'a std::collections::BTreeMap<String, String>,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+    },
+    LifecycleDisable {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        reason: &'a str,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -952,6 +969,38 @@ struct RuntimeLayerEffectsResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct RuntimeLifecycleEnableResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: Option<String>,
+    ok: bool,
+    #[serde(rename = "displayConfig")]
+    display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "keyBindingConfig")]
+    key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
+    #[serde(rename = "pointerConfig")]
+    pointer_config: Option<RuntimePointerConfigUpdate>,
+    #[serde(rename = "eventConfig")]
+    event_config: Option<RuntimeEventConfigUpdate>,
+    #[serde(rename = "processConfig")]
+    process_config: Option<RuntimeProcessConfigUpdate>,
+    #[serde(rename = "processActions")]
+    process_actions: Option<Vec<RuntimeProcessAction>>,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeLifecycleDisableResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: Option<String>,
+    ok: bool,
+    #[serde(default)]
+    state: serde_json::Value,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct RuntimeInvokeKeyBindingResponse {
     #[serde(rename = "requestId")]
     request_id: u64,
@@ -1166,6 +1215,186 @@ impl NodeDecorationEvaluator {
         if let Ok(mut guard) = self.display_state.lock() {
             *guard = display_state;
         }
+    }
+
+    pub fn fresh_like(&self) -> Self {
+        Self {
+            program: self.program.clone(),
+            base_args: self.base_args.clone(),
+            script_path: self.script_path.clone(),
+            config_path: self.config_path.clone(),
+            working_dir: self.working_dir.clone(),
+            transport: self.transport,
+            runtime: Arc::new(Mutex::new(None)),
+            display_state: Arc::new(Mutex::new(
+                self.display_state
+                    .lock()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_default(),
+            )),
+            pointer_move_async: Arc::new(PointerMoveAsyncDispatcher::default()),
+            async_event_sender: Arc::new(Mutex::new(
+                self.async_event_sender
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone()),
+            )),
+        }
+    }
+
+    pub fn preload(&self) -> Result<(), DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let _ = self.ensure_runtime(&mut runtime_guard)?;
+        Ok(())
+    }
+
+    pub fn lifecycle_enable(
+        &self,
+        reason: &str,
+        state: Option<&serde_json::Value>,
+    ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let environment = runtime_environment_snapshot();
+
+        let request = serde_json::to_string(&RuntimeRequest::LifecycleEnable {
+            request_id,
+            reason,
+            state,
+            environment: &environment,
+            display_state: &display_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeLifecycleEnableResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+        if response.kind.as_deref() != Some("lifecycleEnable") {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for lifecycleEnable: {}",
+                response.kind.as_deref().unwrap_or("<missing>")
+            )));
+        }
+
+        Ok(DecorationHandlerInvocation {
+            invoked: true,
+            display_config: response.display_config,
+            key_binding_config: response.key_binding_config,
+            pointer_config: response.pointer_config,
+            event_config: response.event_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
+            ..DecorationHandlerInvocation::default()
+        })
+    }
+
+    pub fn lifecycle_disable(
+        &self,
+        reason: &str,
+    ) -> Result<serde_json::Value, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        let request = serde_json::to_string(&RuntimeRequest::LifecycleDisable {
+            request_id,
+            reason,
+            display_state: &display_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeLifecycleDisableResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+        if response.kind.as_deref() != Some("lifecycleDisable") {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for lifecycleDisable: {}",
+                response.kind.as_deref().unwrap_or("<missing>")
+            )));
+        }
+
+        Ok(response.state)
     }
 
     fn ensure_runtime<'a>(
@@ -1570,6 +1799,19 @@ impl NodeDecorationRuntime {
             ))
         })
     }
+}
+
+fn runtime_environment_snapshot() -> std::collections::BTreeMap<String, String> {
+    [
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+    .collect()
 }
 
 fn apply_decoration_runtime_node_options(command: &mut Command) {

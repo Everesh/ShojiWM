@@ -1069,6 +1069,24 @@ pub fn init_winit(
                         content_elements.extend(scene_elements);
 
                         let mut elements: Vec<WinitRenderElements> = Vec::new();
+                        let error_text_elements = crate::config_error::text_elements_for_output(
+                            renderer,
+                            &mut state.text_rasterizer,
+                            state.config_error_report.as_ref(),
+                            output_geo,
+                            scale,
+                        )
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(WinitRenderElements::Text);
+                        let error_background_elements =
+                            crate::config_error::background_elements_for_output(
+                                state.config_error_report.as_ref(),
+                                output_geo,
+                                scale,
+                            )
+                            .into_iter()
+                            .map(WinitRenderElements::Blink);
                         // FPS overlay sits in front of everything else; build
                         // before the blink + content layers so it ends up at
                         // index 0 (top-most under smithay's element model).
@@ -1078,6 +1096,8 @@ pub fn init_winit(
                             .into_iter()
                             .map(WinitRenderElements::Text)
                             .collect();
+                        elements.extend(error_text_elements);
+                        elements.extend(error_background_elements);
                         elements.extend(fps_overlay_elements);
                         elements.extend(
                             damage_blink::elements_for_output(

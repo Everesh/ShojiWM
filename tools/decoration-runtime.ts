@@ -15,6 +15,11 @@ function findConfigRoot(entryPath: string): string {
   return dirname(resolve(entryPath));
 }
 
+function findPreloadPath(configPath: string): string | null {
+  const candidate = resolve(dirname(resolve(configPath)), "preload.ts");
+  return existsSync(candidate) ? candidate : null;
+}
+
 import {
   advanceAnimationFrame,
   beginKeyBindingRegistration,
@@ -69,6 +74,7 @@ import {
   type RuntimeWindowActivateRequestEvent,
   type PointerMoveEvent,
   type RuntimeEventConfig,
+  type RuntimePersistedState,
   updateOutputState,
   updateLayerSnapshots,
   WINDOW_MANAGER,
@@ -85,21 +91,39 @@ import {
   type WindowTransform,
 } from "shoji_wm";
 
-function debugSSD(message: string, details: Record<string, unknown> = {}): void {
+function debugSSD(
+  message: string,
+  details: Record<string, unknown> = {},
+): void {
   if (!process.env.SHOJI_SSD_SUPPRESSION_DEBUG) {
     return;
   }
   console.info(`ssd-suppression ${message}`, JSON.stringify(details));
 }
 
-function debugLabel(message: string, details: Record<string, unknown> = {}): void {
+function debugLabel(
+  message: string,
+  details: Record<string, unknown> = {},
+): void {
   if (!process.env.SHOJI_LABEL_DEBUG) {
     return;
   }
   console.info(`label-debug ${message}`, JSON.stringify(details));
 }
 
-function snapshotForDebug(snapshot: WaylandWindowSnapshot): Record<string, unknown> {
+function debugHotReload(
+  message: string,
+  details: Record<string, unknown> = {},
+): void {
+  if (!process.env.SHOJI_HOT_RELOAD_DEBUG) {
+    return;
+  }
+  console.info(`hot-reload-runtime ${message}`, JSON.stringify(details));
+}
+
+function snapshotForDebug(
+  snapshot: WaylandWindowSnapshot,
+): Record<string, unknown> {
   return {
     windowId: snapshot.id,
     title: snapshot.title,
@@ -110,6 +134,55 @@ function snapshotForDebug(snapshot: WaylandWindowSnapshot): Record<string, unkno
     resizable: snapshot.isResizable,
     transient: snapshot.isTransient,
   };
+}
+
+function summarizeWindowAction(
+  action: RuntimeWindowAction,
+): Record<string, unknown> {
+  return {
+    windowId: action.windowId,
+    action: action.action,
+    channel: action.channel,
+    animationChannel: action.animation?.channel,
+    rect: action.animation?.rect,
+    offset: action.animation?.offset,
+    opacity: action.animation?.opacity,
+  };
+}
+
+function summarizeAnimationEntries(
+  entries: Map<string, Map<symbol, unknown>>,
+): Record<string, unknown>[] {
+  return Array.from(entries.entries()).map(([windowId, perWindow]) => ({
+    windowId,
+    entryCount: perWindow.size,
+    entries: Array.from(perWindow.entries()).map(([key, value]) => {
+      const entry = value as {
+        progress?: { peek?: () => number };
+        timeline?: {
+          startedAtMs: number;
+          durationMs: number;
+          from: number;
+          to: number;
+          repeat?: unknown;
+        };
+      };
+      return {
+        variable: key.description,
+        progress: entry.progress?.peek?.(),
+        running: entry.timeline !== undefined,
+        timeline: entry.timeline
+          ? {
+              startedAtMs: entry.timeline.startedAtMs,
+              durationMs: entry.timeline.durationMs,
+              from: entry.timeline.from,
+              to: entry.timeline.to,
+              repeat: entry.timeline.repeat,
+            }
+          : undefined,
+      };
+    }),
+  }));
 }
 
 interface EvaluateRequest {
@@ -247,6 +320,22 @@ interface EvaluateLayerEffectsRequest {
   displayState: Record<string, OutputStateSnapshot>;
 }
 
+interface LifecycleEnableRequest {
+  requestId: number;
+  kind: "lifecycleEnable";
+  reason: "initial" | "reload";
+  state?: RuntimePersistedState;
+  environment?: Record<string, string>;
+  displayState: Record<string, OutputStateSnapshot>;
+}
+
+interface LifecycleDisableRequest {
+  requestId: number;
+  kind: "lifecycleDisable";
+  reason: "reload" | "shutdown";
+  displayState: Record<string, OutputStateSnapshot>;
+}
+
 type RuntimeRequest =
   | EvaluateRequest
   | EvaluatePreviewRequest
@@ -263,7 +352,9 @@ type RuntimeRequest =
   | WindowActivateRequest
   | PointerMoveAsyncRequest
   | GetEffectConfigRequest
-  | EvaluateLayerEffectsRequest;
+  | EvaluateLayerEffectsRequest
+  | LifecycleEnableRequest
+  | LifecycleDisableRequest;
 
 type RuntimeRequestWithTimestamp = Extract<RuntimeRequest, { nowMs: number }>;
 
@@ -466,7 +557,10 @@ interface WindowMoveSuccess {
 interface WindowStateRequestSuccess {
   requestId: number;
   ok: true;
-  kind: "windowMaximizeRequest" | "windowMinimizeRequest" | "windowActivateRequest";
+  kind:
+    | "windowMaximizeRequest"
+    | "windowMinimizeRequest"
+    | "windowActivateRequest";
   invoked: boolean;
   dirty: boolean;
   dirtyWindowIds: string[];
@@ -549,9 +643,29 @@ interface EvaluateLayerEffectsSuccess {
   processActions?: RuntimeProcessSpawnAction[];
 }
 
+interface LifecycleEnableSuccess {
+  requestId: number;
+  ok: true;
+  kind: "lifecycleEnable";
+  displayConfig?: { outputs: DisplayConfigDraft };
+  keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
+  pointerConfig?: RuntimePointerConfig;
+  eventConfig?: RuntimeEventConfig;
+  processConfig?: { entries: RuntimeProcessConfigEntry[] };
+  processActions?: RuntimeProcessSpawnAction[];
+}
+
+interface LifecycleDisableSuccess {
+  requestId: number;
+  ok: true;
+  kind: "lifecycleDisable";
+  state: RuntimePersistedState;
+}
+
 interface RuntimeFailure {
   requestId: number;
   ok: false;
+  kind?: RuntimeRequest["kind"];
   error: string;
   displayConfig?: { outputs: DisplayConfigDraft };
 }
@@ -563,7 +677,9 @@ interface RuntimeLayerEffectAssignment {
 
 interface RuntimeEffectConfig {
   background_effect: CompiledEffectHandle | null;
-  window?: (window: ReturnType<typeof createCompositionEvaluationCache>["window"]) => WindowEffectAssignment | null;
+  window?: (
+    window: ReturnType<typeof createCompositionEvaluationCache>["window"],
+  ) => WindowEffectAssignment | null;
 }
 
 interface RuntimeProcessConfigEntry {
@@ -605,7 +721,9 @@ function pendingDisplayConfigPayload():
 function pendingProcessConfigPayload():
   | { entries: RuntimeProcessConfigEntry[] }
   | undefined {
-  const entries = takePendingProcessConfig() as RuntimeProcessConfigEntry[] | undefined;
+  const entries = takePendingProcessConfig() as
+    | RuntimeProcessConfigEntry[]
+    | undefined;
   return entries ? { entries } : undefined;
 }
 
@@ -633,6 +751,17 @@ function pendingEventConfigPayload(
   events: WindowManagerEventController,
 ): RuntimeEventConfig | undefined {
   return events.takePendingEventConfig();
+}
+
+function applyRuntimeEnvironment(
+  environment: Record<string, string> | undefined,
+) {
+  if (!environment) {
+    return;
+  }
+  for (const [key, value] of Object.entries(environment)) {
+    process.env[key] = value;
+  }
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
@@ -690,7 +819,10 @@ interface RuntimePoll {
 
 function installRuntimeConsoleBridge() {
   const original = { ...console };
-  const emit = (level: "debug" | "info" | "warn" | "error", args: unknown[]) => {
+  const emit = (
+    level: "debug" | "info" | "warn" | "error",
+    args: unknown[],
+  ) => {
     const message = format(...args);
     process.stderr.write(
       `__SHOJI_RUNTIME_LOG__${JSON.stringify({ level, message })}\n`,
@@ -706,7 +838,9 @@ function installRuntimeConsoleBridge() {
   return original;
 }
 
-function hasRuntimeTimestamp(request: RuntimeRequest): request is RuntimeRequestWithTimestamp {
+function hasRuntimeTimestamp(
+  request: RuntimeRequest,
+): request is RuntimeRequestWithTimestamp {
   return "nowMs" in request;
 }
 
@@ -761,7 +895,9 @@ async function main() {
   const configPath = process.argv[2];
   const socketPath = process.argv[3];
   if (!configPath) {
-    throw new Error("usage: tsx tools/composition-runtime.ts <config-path> [socket-path]");
+    throw new Error(
+      "usage: tsx tools/composition-runtime.ts <config-path> [socket-path]",
+    );
   }
   installRuntimeConsoleBridge();
   startStatsLogger();
@@ -789,20 +925,45 @@ async function main() {
     },
   });
 
-  const moduleUrl = pathToFileURL(resolve(configPath)).href;
+  const resolvedConfigPath = resolve(configPath);
+  const moduleUrl = pathToFileURL(resolvedConfigPath).href;
   installAssetResolverBridge(findConfigRoot(configPath));
-  installProcessResolverBridge(resolve(configPath));
-  beginKeyBindingRegistration();
-  beginPointerConfigRegistration();
-  beginProcessConfigRegistration();
-  const loaded = await import(moduleUrl).finally(() => {
-    commitKeyBindingRegistration();
-    commitPointerConfigRegistration();
-    commitProcessConfigRegistration();
-  });
-  const composition = resolveComposition(loaded);
-  const events = resolveEvents(loaded);
-  const effectConfig = resolveEffectConfig(loaded);
+  installProcessResolverBridge(resolvedConfigPath);
+
+  const preloadPath = findPreloadPath(resolvedConfigPath);
+  if (preloadPath) {
+    await import(pathToFileURL(preloadPath).href);
+  }
+
+  let loadedConfig: Record<string, unknown> | null = null;
+  let composition: WindowCompositionFunction | null = null;
+  let events: WindowManagerEventController | null = null;
+  let effectConfig: RuntimeEffectConfig | null = null;
+
+  async function loadRuntimeConfig(): Promise<{
+    composition: WindowCompositionFunction;
+    events: WindowManagerEventController;
+    effectConfig: RuntimeEffectConfig;
+  }> {
+    if (!loadedConfig) {
+      beginKeyBindingRegistration();
+      beginPointerConfigRegistration();
+      beginProcessConfigRegistration();
+      loadedConfig = (await import(moduleUrl).finally(() => {
+        commitKeyBindingRegistration();
+        commitPointerConfigRegistration();
+        commitProcessConfigRegistration();
+      })) as Record<string, unknown>;
+      composition = resolveComposition(loadedConfig);
+      events = resolveEvents(loadedConfig);
+      effectConfig = resolveEffectConfig(loadedConfig);
+    }
+    return {
+      composition: composition!,
+      events: events!,
+      effectConfig: effectConfig!,
+    };
+  }
 
   const socket = socketPath ? await connectSocket(socketPath) : null;
   const input = socket ?? process.stdin;
@@ -813,12 +974,12 @@ async function main() {
     try {
       request = JSON.parse(payload.toString("utf8")) as RuntimeRequest;
     } catch (error) {
-        await writeResponse(output, {
-            requestId: -1,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-        });
-        continue;
+      await writeResponse(output, {
+        requestId: -1,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
     }
 
     try {
@@ -866,43 +1027,44 @@ async function main() {
             stats.evaluateLayerEffects++;
             if (hasActiveAnimations()) stats.evaluateLayerEffectsAnim++;
             break;
+          case "lifecycleEnable":
+          case "lifecycleDisable":
+            break;
         }
       }
-      if (request.kind === "evaluate" || request.kind === "evaluatePreview") {
-        const result = request.kind === "evaluate"
-          ? evaluateSnapshot(composition, events, effectConfig, request.snapshot, request.nowMs)
-          : evaluatePreconfigure(composition, events, effectConfig, request.snapshot);
+      if (request.kind === "lifecycleEnable") {
+        applyRuntimeEnvironment(request.environment);
+        const runtimeConfig = await loadRuntimeConfig();
+        debugHotReload("lifecycle-enable-before-emit", {
+          reason: request.reason,
+          persistedStateKeys: Object.keys(request.state ?? {}),
+          cacheWindowIds: Array.from(cacheByWindowId.keys()),
+          openedWindowIds: Array.from(openedWindowIds),
+          firstCommittedWindowIds: Array.from(firstCommittedWindowIds),
+          animationEntries: summarizeAnimationEntries(
+            animationEntriesByWindowId,
+          ),
+        });
+        runtimeConfig.events.emitEnable(request.reason, request.state);
         const keyBindingConfig = pendingKeyBindingConfigPayload();
         const pointerConfig = pendingPointerConfigPayload();
-        const eventConfig = pendingEventConfigPayload(events);
+        const eventConfig = pendingEventConfigPayload(runtimeConfig.events);
         const processConfig = pendingProcessConfigPayload();
         const processActions = pendingProcessActionsPayload();
-        const cached = request.kind === "evaluate"
-          ? cacheByWindowId.get(request.snapshot.id)?.cache
-          : undefined;
-        // Drain this window's queued actions so they ride along with the
-        // evaluation response (typically scheduleAnimation from onOpen /
-        // onFirstCommit). Without this they'd sit in pendingActions until the
-        // next scheduler tick, causing a one-frame flash at the static target.
-        const evaluationEntry = cacheByWindowId.get(request.snapshot.id);
-        const evaluationActions = evaluationEntry
-          ? evaluationEntry.pendingActions.splice(0, evaluationEntry.pendingActions.length)
-          : [];
+        debugHotReload("lifecycle-enable-after-emit", {
+          reason: request.reason,
+          cacheWindowIds: Array.from(cacheByWindowId.keys()),
+          openedWindowIds: Array.from(openedWindowIds),
+          firstCommittedWindowIds: Array.from(firstCommittedWindowIds),
+          animationEntries: summarizeAnimationEntries(
+            animationEntriesByWindowId,
+          ),
+          processActions,
+        });
         await writeResponse(output, {
           requestId: request.requestId,
           ok: true,
-          kind: request.kind,
-          serialized: result.serialized,
-          transform: cached?.lastTransform ?? result.transform ?? identityTransform(),
-          managedWindow: cached?.lastManagedWindow ?? result.managedWindow ?? identityManagedWindow(),
-          windowEffects: result.windowEffects,
-          dirtyNodeIds: request.kind === "evaluate"
-            ? takeDirtyWindowNodeIds(request.snapshot.id)
-            : [],
-          nextPollInMs: request.kind === "evaluate"
-            ? hasActiveAnimations() ? 0 : peekNextPollDelay()
-            : undefined,
-          actions: evaluationActions.length > 0 ? evaluationActions : undefined,
+          kind: "lifecycleEnable",
           displayConfig: pendingDisplayConfigPayload(),
           keyBindingConfig,
           pointerConfig,
@@ -910,264 +1072,106 @@ async function main() {
           processConfig,
           processActions,
         });
+      } else if (request.kind === "lifecycleDisable") {
+        const runtimeConfig = await loadRuntimeConfig();
+        debugHotReload("lifecycle-disable-before-emit", {
+          reason: request.reason,
+          cacheWindowIds: Array.from(cacheByWindowId.keys()),
+          openedWindowIds: Array.from(openedWindowIds),
+          firstCommittedWindowIds: Array.from(firstCommittedWindowIds),
+          animationEntries: summarizeAnimationEntries(
+            animationEntriesByWindowId,
+          ),
+        });
+        const state = runtimeConfig.events.emitDisable(request.reason);
+        debugHotReload("lifecycle-disable-after-emit", {
+          reason: request.reason,
+          stateKeys: Object.keys(state),
+          cacheWindowIds: Array.from(cacheByWindowId.keys()),
+          firstCommittedWindowIds: Array.from(firstCommittedWindowIds),
+          animationEntries: summarizeAnimationEntries(
+            animationEntriesByWindowId,
+          ),
+        });
+        await writeResponse(output, {
+          requestId: request.requestId,
+          ok: true,
+          kind: "lifecycleDisable",
+          state,
+        });
       } else {
-        if (request.kind === "schedulerTick") {
-          const tick = processSchedulerTick(request.nowMs);
-          if (statsEnabled && tick.dirty) stats.schedulerTickDirty++;
+        const runtimeConfig = await loadRuntimeConfig();
+        const composition = runtimeConfig.composition;
+        const events = runtimeConfig.events;
+        const effectConfig = runtimeConfig.effectConfig;
+        if (request.kind === "evaluate" || request.kind === "evaluatePreview") {
+          const result =
+            request.kind === "evaluate"
+              ? evaluateSnapshot(
+                  composition,
+                  events,
+                  effectConfig,
+                  request.snapshot,
+                  request.nowMs,
+                )
+              : evaluatePreconfigure(
+                  composition,
+                  events,
+                  effectConfig,
+                  request.snapshot,
+                );
           const keyBindingConfig = pendingKeyBindingConfigPayload();
           const pointerConfig = pendingPointerConfigPayload();
           const eventConfig = pendingEventConfigPayload(events);
           const processConfig = pendingProcessConfigPayload();
           const processActions = pendingProcessActionsPayload();
-          const debugConfig = takePendingDebugConfig();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "schedulerTick",
-            dirty: tick.dirty,
-            dirtyWindowIds: tick.dirtyWindowIds,
-            dirtyManagedWindowIds: tick.dirtyManagedWindowIds,
-            dirtyWindowNodeIds: tick.dirtyWindowNodeIds,
-            dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
-            actions: tick.actions,
-            nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            eventConfig,
-            processConfig,
-            processActions,
-            debugConfig,
-          });
-        } else if (request.kind === "windowClosed") {
-          closeWindow(events, request.windowId);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowClosed",
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "startClose") {
-          const result = startClose(events, effectConfig, request.windowId);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "startClose",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "evaluateCached") {
-          const result = evaluateCached(effectConfig, request.windowId, request.snapshot);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          // Same as evaluate: drain queued window actions (scheduleAnimation /
-          // cancelAnimation) so Rust sees them in lockstep with this evaluation.
-          const cachedEntry = cacheByWindowId.get(request.windowId);
-          const cachedActions = cachedEntry
-            ? cachedEntry.pendingActions.splice(0, cachedEntry.pendingActions.length)
+          const cached =
+            request.kind === "evaluate"
+              ? cacheByWindowId.get(request.snapshot.id)?.cache
+              : undefined;
+          // Drain this window's queued actions so they ride along with the
+          // evaluation response (typically scheduleAnimation from onOpen /
+          // onFirstCommit). Without this they'd sit in pendingActions until the
+          // next scheduler tick, causing a one-frame flash at the static target.
+          const evaluationEntry = cacheByWindowId.get(request.snapshot.id);
+          const evaluationActions = evaluationEntry
+            ? evaluationEntry.pendingActions.splice(
+                0,
+                evaluationEntry.pendingActions.length,
+              )
             : [];
+          if (evaluationActions.length > 0) {
+            debugHotReload("evaluate-actions", {
+              kind: request.kind,
+              windowId: request.snapshot.id,
+              title: request.snapshot.title,
+              actions: evaluationActions.map(summarizeWindowAction),
+            });
+          }
           await writeResponse(output, {
             requestId: request.requestId,
             ok: true,
-            kind: "evaluateCached",
+            kind: request.kind,
             serialized: result.serialized,
-            transform: result.transform,
-            managedWindow: result.managedWindow,
+            transform:
+              cached?.lastTransform ?? result.transform ?? identityTransform(),
+            managedWindow:
+              cached?.lastManagedWindow ??
+              result.managedWindow ??
+              identityManagedWindow(),
             windowEffects: result.windowEffects,
-            dirtyNodeIds: result.dirtyNodeIds,
-            managedWindowOnly: result.managedWindowOnly,
-            nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
-            actions: cachedActions.length > 0 ? cachedActions : undefined,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "getEffectConfig") {
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "getEffectConfig",
-            backgroundEffect: effectConfig.background_effect,
-            displayConfig: pendingDisplayConfigPayload(),
-          });
-        } else if (request.kind === "evaluateLayerEffects") {
-          const result = evaluateLayerEffects(events, request.outputName, request.layers);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "evaluateLayerEffects",
-            effects: result.effects,
-            nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "invokeKeyBinding") {
-          const result = invokeGlobalKeyBinding(request.bindingId);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "invokeKeyBinding",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "windowResize") {
-          const result = invokeWindowResize(events, request.windowId, request.event);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowResize",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "windowMove") {
-          const result = invokeWindowMove(events, request.windowId, request.event);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const eventConfig = pendingEventConfigPayload(events);
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowMove",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            eventConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "windowMaximizeRequest") {
-          const result = invokeWindowMaximizeRequest(
-            composition,
-            events,
-            request.windowId,
-            request.snapshot,
-            request.event,
-          );
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const eventConfig = pendingEventConfigPayload(events);
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowMaximizeRequest",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            eventConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "windowMinimizeRequest") {
-          const result = invokeWindowMinimizeRequest(
-            composition,
-            events,
-            request.windowId,
-            request.snapshot,
-            request.event,
-          );
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const eventConfig = pendingEventConfigPayload(events);
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowMinimizeRequest",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            eventConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "windowActivateRequest") {
-          const result = invokeWindowActivateRequest(
-            composition,
-            events,
-            request.windowId,
-            request.snapshot,
-            request.event,
-          );
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const eventConfig = pendingEventConfigPayload(events);
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "windowActivateRequest",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            eventConfig,
-            processConfig,
-            processActions,
-          });
-        } else if (request.kind === "pointerMoveAsync") {
-          const result = await invokePointerMoveAsync(events, request.event);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const eventConfig = pendingEventConfigPayload(events);
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "pointerMoveAsync",
-            ...result,
+            dirtyNodeIds:
+              request.kind === "evaluate"
+                ? takeDirtyWindowNodeIds(request.snapshot.id)
+                : [],
+            nextPollInMs:
+              request.kind === "evaluate"
+                ? hasActiveAnimations()
+                  ? 0
+                  : peekNextPollDelay()
+                : undefined,
+            actions:
+              evaluationActions.length > 0 ? evaluationActions : undefined,
             displayConfig: pendingDisplayConfigPayload(),
             keyBindingConfig,
             pointerConfig,
@@ -1176,29 +1180,330 @@ async function main() {
             processActions,
           });
         } else {
-          const result = invokeHandler(effectConfig, request.windowId, request.handlerId);
-          const keyBindingConfig = pendingKeyBindingConfigPayload();
-          const pointerConfig = pendingPointerConfigPayload();
-          const processConfig = pendingProcessConfigPayload();
-          const processActions = pendingProcessActionsPayload();
-          await writeResponse(output, {
-            requestId: request.requestId,
-            ok: true,
-            kind: "invokeHandler",
-            ...result,
-            displayConfig: pendingDisplayConfigPayload(),
-            keyBindingConfig,
-            pointerConfig,
-            processConfig,
-            processActions,
-          });
+          if (request.kind === "schedulerTick") {
+            const tick = processSchedulerTick(request.nowMs);
+            if (statsEnabled && tick.dirty) stats.schedulerTickDirty++;
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            const debugConfig = takePendingDebugConfig();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "schedulerTick",
+              dirty: tick.dirty,
+              dirtyWindowIds: tick.dirtyWindowIds,
+              dirtyManagedWindowIds: tick.dirtyManagedWindowIds,
+              dirtyWindowNodeIds: tick.dirtyWindowNodeIds,
+              dirtyLayerNodeIds: tick.dirtyLayerNodeIds,
+              actions: tick.actions,
+              nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+              debugConfig,
+            });
+          } else if (request.kind === "windowClosed") {
+            closeWindow(events, request.windowId);
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowClosed",
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "startClose") {
+            const result = startClose(events, effectConfig, request.windowId);
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "startClose",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "evaluateCached") {
+            const result = evaluateCached(
+              composition,
+              events,
+              effectConfig,
+              request.windowId,
+              request.snapshot,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            // Same as evaluate: drain queued window actions (scheduleAnimation /
+            // cancelAnimation) so Rust sees them in lockstep with this evaluation.
+            const cachedEntry = cacheByWindowId.get(request.windowId);
+            const cachedActions = cachedEntry
+              ? cachedEntry.pendingActions.splice(
+                  0,
+                  cachedEntry.pendingActions.length,
+                )
+              : [];
+            if (cachedActions.length > 0) {
+              debugHotReload("evaluate-cached-actions", {
+                windowId: request.windowId,
+                actions: cachedActions.map(summarizeWindowAction),
+              });
+            }
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "evaluateCached",
+              serialized: result.serialized,
+              transform: result.transform,
+              managedWindow: result.managedWindow,
+              windowEffects: result.windowEffects,
+              dirtyNodeIds: result.dirtyNodeIds,
+              managedWindowOnly: result.managedWindowOnly,
+              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              actions: cachedActions.length > 0 ? cachedActions : undefined,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "getEffectConfig") {
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "getEffectConfig",
+              backgroundEffect: effectConfig.background_effect,
+              displayConfig: pendingDisplayConfigPayload(),
+            });
+          } else if (request.kind === "evaluateLayerEffects") {
+            const result = evaluateLayerEffects(
+              events,
+              request.outputName,
+              request.layers,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "evaluateLayerEffects",
+              effects: result.effects,
+              nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "invokeKeyBinding") {
+            const result = invokeGlobalKeyBinding(request.bindingId);
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "invokeKeyBinding",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "windowResize") {
+            const result = invokeWindowResize(
+              events,
+              request.windowId,
+              request.event,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowResize",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "windowMove") {
+            const result = invokeWindowMove(
+              events,
+              request.windowId,
+              request.event,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowMove",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "windowMaximizeRequest") {
+            const result = invokeWindowMaximizeRequest(
+              composition,
+              events,
+              request.windowId,
+              request.snapshot,
+              request.event,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowMaximizeRequest",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "windowMinimizeRequest") {
+            const result = invokeWindowMinimizeRequest(
+              composition,
+              events,
+              request.windowId,
+              request.snapshot,
+              request.event,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowMinimizeRequest",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "windowActivateRequest") {
+            const result = invokeWindowActivateRequest(
+              composition,
+              events,
+              request.windowId,
+              request.snapshot,
+              request.event,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "windowActivateRequest",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else if (request.kind === "pointerMoveAsync") {
+            const result = await invokePointerMoveAsync(events, request.event);
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const eventConfig = pendingEventConfigPayload(events);
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "pointerMoveAsync",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              eventConfig,
+              processConfig,
+              processActions,
+            });
+          } else {
+            const result = invokeHandler(
+              effectConfig,
+              request.windowId,
+              request.handlerId,
+            );
+            const keyBindingConfig = pendingKeyBindingConfigPayload();
+            const pointerConfig = pendingPointerConfigPayload();
+            const processConfig = pendingProcessConfigPayload();
+            const processActions = pendingProcessActionsPayload();
+            await writeResponse(output, {
+              requestId: request.requestId,
+              ok: true,
+              kind: "invokeHandler",
+              ...result,
+              displayConfig: pendingDisplayConfigPayload(),
+              keyBindingConfig,
+              pointerConfig,
+              processConfig,
+              processActions,
+            });
+          }
         }
       }
     } catch (error) {
       await writeResponse(output, {
         requestId: request.requestId,
         ok: false,
-        error: error instanceof Error ? error.stack ?? error.message : String(error),
+        kind: request.kind,
+        error:
+          error instanceof Error
+            ? (error.stack ?? error.message)
+            : String(error),
         displayConfig: pendingDisplayConfigPayload(),
       });
     }
@@ -1206,6 +1511,8 @@ async function main() {
 }
 
 function evaluateCached(
+  composition: WindowCompositionFunction,
+  events: WindowManagerEventController,
   effectConfig: RuntimeEffectConfig,
   windowId: string,
   snapshot?: WaylandWindowSnapshot,
@@ -1218,15 +1525,47 @@ function evaluateCached(
   managedWindowOnly?: boolean;
   nextPollInMs?: number;
 } {
-  const entry = cacheByWindowId.get(windowId);
+  let entry = cacheByWindowId.get(windowId);
   if (!entry) {
-    throw new Error(`missing cache entry for closing window ${windowId}`);
+    if (!snapshot) {
+      throw new Error(`missing cache entry for closing window ${windowId}`);
+    }
+    if (snapshot.id !== windowId) {
+      throw new Error(
+        `cached window snapshot id mismatch: ${windowId} != ${snapshot.id}`,
+      );
+    }
+    debugHotReload("evaluate-cached-recreate-cache", {
+      windowId,
+      snapshot: snapshotForDebug(snapshot),
+    });
+    entry = createRuntimeCacheEntry(
+      snapshot,
+      composition,
+      RENDER_COMPOSITION_CONTEXT,
+    );
+    cacheByWindowId.set(windowId, entry);
+    openedWindowIds.add(windowId);
+    dirtyWindowIds.delete(windowId);
+    takeDirtyWindowNodeIds(windowId);
+    takeManagedWindowOnlyDirty(windowId);
+    events.emitFocus(entry.cache.window, snapshot.isFocused);
+    if (!firstCommittedWindowIds.has(windowId)) {
+      firstCommittedWindowIds.add(windowId);
+      debugHotReload("evaluate-cached-recreate-first-commit", {
+        windowId,
+        snapshot: snapshotForDebug(snapshot),
+      });
+      events.emitFirstCommit(entry.cache.window);
+    }
   }
 
   let updated: ReturnType<CompositionEvaluationCache["update"]> = null;
   if (snapshot !== undefined) {
     if (snapshot.id !== windowId) {
-      throw new Error(`cached window snapshot id mismatch: ${windowId} != ${snapshot.id}`);
+      throw new Error(
+        `cached window snapshot id mismatch: ${windowId} != ${snapshot.id}`,
+      );
     }
     debugSSD("runtime-evaluate-cached-update-snapshot", {
       windowId,
@@ -1239,7 +1578,9 @@ function evaluateCached(
       snapshotTitle: snapshot.title,
       windowTitle: entry.cache.window.title.peek(),
       updated: updated !== null,
-      labels: updated ? summarizeSerializedLabels(updated.serialized) : undefined,
+      labels: updated
+        ? summarizeSerializedLabels(updated.serialized)
+        : undefined,
     });
     // Updating reactive snapshot signals can mark this same window dirty.
     // This cached evaluation is already consuming that snapshot update, so
@@ -1353,7 +1694,11 @@ function evaluateSnapshot(
       nowMs,
       snapshot: snapshotForDebug(snapshot),
     });
-    const entry = createRuntimeCacheEntry(snapshot, composition, RENDER_COMPOSITION_CONTEXT);
+    const entry = createRuntimeCacheEntry(
+      snapshot,
+      composition,
+      RENDER_COMPOSITION_CONTEXT,
+    );
     cacheByWindowId.set(snapshot.id, entry);
     if (!openedWindowIds.has(snapshot.id)) {
       openedWindowIds.add(snapshot.id);
@@ -1459,7 +1804,11 @@ function evaluatePreconfigure(
     debugSSD("runtime-preconfigure-new-cache", {
       snapshot: snapshotForDebug(snapshot),
     });
-    entry = createRuntimeCacheEntry(snapshot, composition, PRECONFIGURE_COMPOSITION_CONTEXT);
+    entry = createRuntimeCacheEntry(
+      snapshot,
+      composition,
+      PRECONFIGURE_COMPOSITION_CONTEXT,
+    );
     cacheByWindowId.set(snapshot.id, entry);
     if (!openedWindowIds.has(snapshot.id)) {
       openedWindowIds.add(snapshot.id);
@@ -1538,13 +1887,18 @@ function evaluateWindowEffects(
 
   enterWindowDependencyScope(windowId);
   try {
-    return resolveSignals(evaluate(entry.cache.window)) as WindowEffectAssignment | null;
+    return resolveSignals(
+      evaluate(entry.cache.window),
+    ) as WindowEffectAssignment | null;
   } finally {
     leaveWindowDependencyScope();
   }
 }
 
-function reanchorAnimationEntries(entries: Map<symbol, unknown>, nowMs: number): void {
+function reanchorAnimationEntries(
+  entries: Map<symbol, unknown>,
+  nowMs: number,
+): void {
   for (const rawEntry of entries.values()) {
     const entry = rawEntry as {
       progress?: { value: number };
@@ -1565,7 +1919,9 @@ function serializeManagedWindowAnimation(
     channel: options.channel ?? "default",
     rect: options.rect
       ? {
-          from: options.rect.from ? snapshotManagedWindowRectOption(options.rect.from) : undefined,
+          from: options.rect.from
+            ? snapshotManagedWindowRectOption(options.rect.from)
+            : undefined,
           to: snapshotManagedWindowRectOption(options.rect.to),
           duration: Math.max(1, Math.floor(options.rect.duration)),
           easing: serializeManagedWindowEasing(options.rect.easing),
@@ -1574,7 +1930,9 @@ function serializeManagedWindowAnimation(
       : undefined,
     offset: options.offset
       ? {
-          from: options.offset.from ? snapshotManagedWindowPointOption(options.offset.from) : undefined,
+          from: options.offset.from
+            ? snapshotManagedWindowPointOption(options.offset.from)
+            : undefined,
           to: snapshotManagedWindowPointOption(options.offset.to),
           duration: Math.max(1, Math.floor(options.offset.duration)),
           easing: serializeManagedWindowEasing(options.offset.easing),
@@ -1583,7 +1941,10 @@ function serializeManagedWindowAnimation(
       : undefined,
     opacity: options.opacity
       ? {
-          from: options.opacity.from === undefined ? undefined : read(options.opacity.from),
+          from:
+            options.opacity.from === undefined
+              ? undefined
+              : read(options.opacity.from),
           to: read(options.opacity.to),
           duration: Math.max(1, Math.floor(options.opacity.duration)),
           easing: serializeManagedWindowEasing(options.opacity.easing),
@@ -1593,7 +1954,9 @@ function serializeManagedWindowAnimation(
   };
 }
 
-function snapshotManagedWindowRectOption(rect: ManagedWindowRect): RuntimeManagedWindowRect {
+function snapshotManagedWindowRectOption(
+  rect: ManagedWindowRect,
+): RuntimeManagedWindowRect {
   return {
     x: read(rect.x),
     y: read(rect.y),
@@ -1602,7 +1965,9 @@ function snapshotManagedWindowRectOption(rect: ManagedWindowRect): RuntimeManage
   };
 }
 
-function snapshotManagedWindowPointOption(point: ManagedWindowPoint): RuntimeManagedWindowPoint {
+function snapshotManagedWindowPointOption(
+  point: ManagedWindowPoint,
+): RuntimeManagedWindowPoint {
   return {
     x: read(point.x),
     y: read(point.y),
@@ -1616,14 +1981,18 @@ function serializeManagedWindowEasing(
     return { kind: "linear" };
   }
   if (typeof easing === "function") {
-    const bezier = (easing as {
-      __shojiCubicBezier?: readonly [number, number, number, number];
-    }).__shojiCubicBezier;
+    const bezier = (
+      easing as {
+        __shojiCubicBezier?: readonly [number, number, number, number];
+      }
+    ).__shojiCubicBezier;
     if (bezier) {
       const [x1, y1, x2, y2] = bezier;
       return { kind: "cubicBezier", x1, y1, x2, y2 };
     }
-    console.warn("window.scheduleAnimation received a non-serializable easing; using linear");
+    console.warn(
+      "window.scheduleAnimation received a non-serializable easing; using linear",
+    );
     return { kind: "linear" };
   }
   if (easing.kind === "cubicBezier") {
@@ -1640,33 +2009,60 @@ function createRuntimeCacheEntry(
   let latestSnapshot = snapshot;
   const actions: WaylandWindowActions = {
     close() {
-      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "close" });
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "close",
+      });
     },
     maximize() {
-      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "maximize" });
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "maximize",
+      });
     },
     unmaximize() {
-      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "unmaximize" });
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "unmaximize",
+      });
     },
     minimize() {
-      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "minimize" });
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "minimize",
+      });
     },
     focus() {
-      entry.pendingActions.push({ windowId: latestSnapshot.id, action: "focus" });
+      entry.pendingActions.push({
+        windowId: latestSnapshot.id,
+        action: "focus",
+      });
     },
     scheduleAnimation(options) {
-      entry.pendingActions.push({
+      const action = {
         windowId: latestSnapshot.id,
         action: "scheduleAnimation",
         animation: serializeManagedWindowAnimation(options),
+      } satisfies RuntimeWindowAction;
+      debugHotReload("queue-schedule-animation", {
+        windowId: latestSnapshot.id,
+        title: latestSnapshot.title,
+        action: summarizeWindowAction(action),
       });
+      entry.pendingActions.push(action);
     },
     cancelAnimation(channel) {
-      entry.pendingActions.push({
+      const action = {
         windowId: latestSnapshot.id,
         action: "cancelAnimation",
         channel,
+      } satisfies RuntimeWindowAction;
+      debugHotReload("queue-cancel-animation", {
+        windowId: latestSnapshot.id,
+        title: latestSnapshot.title,
+        action: summarizeWindowAction(action),
       });
+      entry.pendingActions.push(action);
     },
     setCloseAnimationDuration(durationMs) {
       entry.closeAnimationDurationMs = Math.max(0, Math.floor(durationMs));
@@ -1683,7 +2079,13 @@ function createRuntimeCacheEntry(
     snapshot.id,
     animationEntries as Map<symbol, never>,
   );
-  const cache = createCompositionEvaluationCache(snapshot, actions, composition, animation, context);
+  const cache = createCompositionEvaluationCache(
+    snapshot,
+    actions,
+    composition,
+    animation,
+    context,
+  );
   const entry: RuntimeCacheEntry = {
     latestSnapshot,
     cache,
@@ -1703,7 +2105,11 @@ function ensureRuntimeCacheEntry(
 ): RuntimeCacheEntry {
   let entry = cacheByWindowId.get(snapshot.id);
   if (!entry) {
-    entry = createRuntimeCacheEntry(snapshot, composition, RENDER_COMPOSITION_CONTEXT);
+    entry = createRuntimeCacheEntry(
+      snapshot,
+      composition,
+      RENDER_COMPOSITION_CONTEXT,
+    );
     cacheByWindowId.set(snapshot.id, entry);
     if (!openedWindowIds.has(snapshot.id)) {
       openedWindowIds.add(snapshot.id);
@@ -1800,7 +2206,11 @@ function syncLayerSnapshots(
       }
       continue;
     }
+    const usableAreaChanged = layerUsableAreaChanged(existing.layer, snapshot);
     existing.update(snapshot);
+    if (usableAreaChanged) {
+      events.emitUpdateLayer(existing.layer);
+    }
   }
 
   for (const [layerId, existing] of cacheByLayerId) {
@@ -1814,6 +2224,27 @@ function syncLayerSnapshots(
     dirtyLayerIds.delete(layerId);
     dropLayerDependencies(layerId);
   }
+}
+
+function layerUsableAreaChanged(
+  layer: WaylandLayer,
+  snapshot: WaylandLayerSnapshot,
+): boolean {
+  const currentExclusiveZone = read(layer.exclusiveZone);
+  const currentAnchor = read(layer.anchor);
+  const nextExclusiveZone = snapshot.exclusiveZone;
+  const nextAnchor = snapshot.anchor;
+
+  return (
+    read(layer.outputName) !== snapshot.outputName ||
+    read(layer.exclusiveEdge) !== snapshot.exclusiveEdge ||
+    currentExclusiveZone.mode !== nextExclusiveZone.mode ||
+    currentExclusiveZone.size !== nextExclusiveZone.size ||
+    currentAnchor.top !== nextAnchor.top ||
+    currentAnchor.right !== nextAnchor.right ||
+    currentAnchor.bottom !== nextAnchor.bottom ||
+    currentAnchor.left !== nextAnchor.left
+  );
 }
 
 function snapshotLayerEffect(layer: WaylandLayer): CompiledEffectHandle | null {
@@ -1837,7 +2268,9 @@ function resolveSignals<T>(value: T): T {
   }
   if (value && typeof value === "object") {
     const resolved: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    for (const [key, entry] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
       resolved[key] = resolveSignals(entry);
     }
     return resolved as T;
@@ -1991,7 +2424,15 @@ function collectRuntimeMutationState(): {
       .filter(([, nodeIds]) => nodeIds.length > 0),
   );
   const actions = drainPendingActions();
-  const dirty = runtimeDirty || nextDirtyWindowIds.length > 0 || nextDirtyLayerIds.length > 0;
+  if (actions.length > 0) {
+    debugHotReload("collect-runtime-actions", {
+      actions: actions.map(summarizeWindowAction),
+    });
+  }
+  const dirty =
+    runtimeDirty ||
+    nextDirtyWindowIds.length > 0 ||
+    nextDirtyLayerIds.length > 0;
   runtimeDirty = false;
   if (dirty) {
     debugSSD("runtime-collect-dirty", {
@@ -2014,7 +2455,9 @@ function collectRuntimeMutationState(): {
     dirtyManagedWindowIds:
       dirtyManagedWindowIds.length > 0 ? dirtyManagedWindowIds : undefined,
     dirtyWindowNodeIds:
-      Object.keys(dirtyWindowNodeIds).length > 0 ? dirtyWindowNodeIds : undefined,
+      Object.keys(dirtyWindowNodeIds).length > 0
+        ? dirtyWindowNodeIds
+        : undefined,
     dirtyLayerNodeIds:
       Object.keys(dirtyLayerNodeIds).length > 0 ? dirtyLayerNodeIds : undefined,
     actions,
@@ -2219,8 +2662,10 @@ function invokeWindowActivateRequest(
   };
 }
 
-function emptyWindowStateRequestResult():
-  Omit<WindowStateRequestSuccess, "requestId" | "ok" | "kind"> {
+function emptyWindowStateRequestResult(): Omit<
+  WindowStateRequestSuccess,
+  "requestId" | "ok" | "kind"
+> {
   return {
     invoked: false,
     dirty: false,
@@ -2258,7 +2703,10 @@ async function invokePointerMoveAsync(
   };
 }
 
-function closeWindow(events: WindowManagerEventController, windowId: string): void {
+function closeWindow(
+  events: WindowManagerEventController,
+  windowId: string,
+): void {
   const existing = cacheByWindowId.get(windowId);
   if (!existing) {
     return;
@@ -2363,7 +2811,9 @@ function invokeHandler(
   }
 
   const managedWindowOnly = isManagedWindowOnlyDirty(windowId);
-  const dirtyNodeIds = managedWindowOnly ? [] : takeDirtyWindowNodeIds(windowId);
+  const dirtyNodeIds = managedWindowOnly
+    ? []
+    : takeDirtyWindowNodeIds(windowId);
   const reevaluated = managedWindowOnly
     ? undefined
     : entry.cache.reevaluate(dirtyNodeIds);
@@ -2379,8 +2829,12 @@ function invokeHandler(
         handlerId,
         dirtyNodeIds,
         managedWindowOnly,
-        nodeCount: reevaluated ? countSerializedNodes(reevaluated.serialized) : 0,
-        topLevel: reevaluated ? summarizeSerializedChildren(reevaluated.serialized) : null,
+        nodeCount: reevaluated
+          ? countSerializedNodes(reevaluated.serialized)
+          : 0,
+        topLevel: reevaluated
+          ? summarizeSerializedChildren(reevaluated.serialized)
+          : null,
       }),
     );
   }
@@ -2404,14 +2858,24 @@ function countSerializedNodes(node: unknown): number {
     return 0;
   }
   const record = node as { children?: unknown[] };
-  return 1 + (record.children ?? []).reduce((sum, child) => sum + countSerializedNodes(child), 0);
+  return (
+    1 +
+    (record.children ?? []).reduce(
+      (sum, child) => sum + countSerializedNodes(child),
+      0,
+    )
+  );
 }
 
 function summarizeSerializedChildren(node: unknown): unknown {
   if (!node || typeof node !== "object") {
     return null;
   }
-  const record = node as { kind?: string; nodeId?: string; children?: unknown[] };
+  const record = node as {
+    kind?: string;
+    nodeId?: string;
+    children?: unknown[];
+  };
   return {
     kind: record.kind,
     nodeId: record.nodeId,
@@ -2420,7 +2884,11 @@ function summarizeSerializedChildren(node: unknown): unknown {
       if (!child || typeof child !== "object") {
         return { primitive: typeof child };
       }
-      const childRecord = child as { kind?: string; nodeId?: string; children?: unknown[] };
+      const childRecord = child as {
+        kind?: string;
+        nodeId?: string;
+        children?: unknown[];
+      };
       return {
         kind: childRecord.kind,
         nodeId: childRecord.nodeId,
@@ -2449,7 +2917,9 @@ function drainPendingActions(): RuntimeWindowAction[] {
     if (entry.pendingActions.length === 0) {
       continue;
     }
-    actions.push(...entry.pendingActions.splice(0, entry.pendingActions.length));
+    actions.push(
+      ...entry.pendingActions.splice(0, entry.pendingActions.length),
+    );
   }
   return actions;
 }
@@ -2465,9 +2935,7 @@ function resolveComposition(
     (loaded.composition as WindowCompositionFunction | undefined);
 
   if (!maybeComposition) {
-    throw new Error(
-      "config did not assign WINDOW_MANAGER.window.composition",
-    );
+    throw new Error("config did not assign WINDOW_MANAGER.window.composition");
   }
 
   return maybeComposition;
@@ -2478,24 +2946,31 @@ function resolveEvents(
 ): WindowManagerEventController {
   const maybeEvents =
     WINDOW_MANAGER.event ??
-    (loaded.default as { event?: WindowManagerEventController } | undefined)?.event;
+    (loaded.default as { event?: WindowManagerEventController } | undefined)
+      ?.event;
 
   if (!maybeEvents) {
-    throw new Error(
-      "config did not initialize WINDOW_MANAGER.event",
-    );
+    throw new Error("config did not initialize WINDOW_MANAGER.event");
   }
 
   return maybeEvents;
 }
 
-function resolveEffectConfig(loaded: Record<string, unknown>): RuntimeEffectConfig {
+function resolveEffectConfig(
+  loaded: Record<string, unknown>,
+): RuntimeEffectConfig {
   const maybeEffect =
     WINDOW_MANAGER.effect ??
-    (loaded.default as { effect?: {
-      background_effect?: CompiledEffectHandle | null;
-      window?: RuntimeEffectConfig["window"];
-    } } | undefined)?.effect;
+    (
+      loaded.default as
+        | {
+            effect?: {
+              background_effect?: CompiledEffectHandle | null;
+              window?: RuntimeEffectConfig["window"];
+            };
+          }
+        | undefined
+    )?.effect;
 
   return {
     background_effect: maybeEffect?.background_effect ?? null,
@@ -2526,8 +3001,10 @@ function writeResponse(
     | PointerMoveAsyncSuccess
     | GetEffectConfigSuccess
     | EvaluateLayerEffectsSuccess
+    | LifecycleEnableSuccess
+    | LifecycleDisableSuccess
     | RuntimeFailure,
-) : Promise<void> {
+): Promise<void> {
   const payload = Buffer.from(JSON.stringify(response), "utf8");
   if (payload.length > 0xffff_ffff) {
     throw new Error("runtime response too large");

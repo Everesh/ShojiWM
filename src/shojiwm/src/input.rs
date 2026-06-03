@@ -31,6 +31,7 @@ use crate::{
 enum KeyboardAction {
     Forward,
     Quit,
+    ReloadConfig,
     RuntimeKeyBinding(String),
     LogMarker(u8),
 }
@@ -138,6 +139,17 @@ impl ShojiWM {
                                 && !modifiers.ctrl
                                 && !modifiers.alt
                                 && let Some(raw) = handle.raw_latin_sym_or_raw_current_sym()
+                                && raw.raw() == keysyms::KEY_r
+                            {
+                                FilterResult::Intercept(KeyboardAction::ReloadConfig)
+                            } else if matches!(
+                                key_phase,
+                                crate::runtime_key_binding::RuntimeKeyBindingPhase::Press,
+                            ) && modifiers.logo
+                                && modifiers.shift
+                                && !modifiers.ctrl
+                                && !modifiers.alt
+                                && let Some(raw) = handle.raw_latin_sym_or_raw_current_sym()
                                 && let Some(digit) = match raw.raw() {
                                     keysyms::KEY_0 => Some(0u8),
                                     keysyms::KEY_1 => Some(1),
@@ -162,6 +174,7 @@ impl ShojiWM {
 
                 match action {
                     KeyboardAction::Quit => self.shutdown(),
+                    KeyboardAction::ReloadConfig => self.reload_decoration_runtime(),
                     KeyboardAction::RuntimeKeyBinding(binding_id) => {
                         let now_ms = std::time::Duration::from(self.clock.now()).as_millis() as u64;
                         self.sync_runtime_display_state();
@@ -207,6 +220,9 @@ impl ShojiWM {
                                     binding_id,
                                     "failed to invoke runtime key binding"
                                 );
+                                self.config_error_report =
+                                    Some(crate::config_error::ConfigErrorReport::runtime(error));
+                                self.schedule_redraw();
                             }
                         }
                     }

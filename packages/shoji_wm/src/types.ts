@@ -17,11 +17,7 @@ export interface WaylandWindowSnapshot {
   readonly interaction: WindowCompositionInteractionSnapshot;
 }
 
-export type WaylandLayerKind =
-  | "background"
-  | "bottom"
-  | "top"
-  | "overlay";
+export type WaylandLayerKind = "background" | "bottom" | "top" | "overlay";
 
 export type WaylandLayerEdge = "top" | "bottom" | "left" | "right";
 
@@ -186,7 +182,11 @@ export interface ManagedWindowPoint {
   y: MaybeSignal<number>;
 }
 
-export type ManagedWindowAnimationMode = "override" | "add" | "sub" | "multiply";
+export type ManagedWindowAnimationMode =
+  | "override"
+  | "add"
+  | "sub"
+  | "multiply";
 
 export type ManagedWindowAnimationEasing =
   | "linear"
@@ -567,10 +567,7 @@ export interface LayerController {
    * the top bar). Always returns an object; missing outputs or empty layer
    * sets yield zero insets.
    */
-  reservedInsets(
-    outputName: string,
-    options?: UsableAreaOptions,
-  ): LayerInsets;
+  reservedInsets(outputName: string, options?: UsableAreaOptions): LayerInsets;
 }
 
 export type ProcessEnv = Record<string, string>;
@@ -598,14 +595,9 @@ export type StartupProcessRunPolicy =
   | "once-per-session"
   | "once-per-config-version";
 
-export type ManagedProcessRestartPolicy =
-  | "never"
-  | "on-failure"
-  | "on-exit";
+export type ManagedProcessRestartPolicy = "never" | "on-failure" | "on-exit";
 
-export type ManagedProcessReloadPolicy =
-  | "keep-if-unchanged"
-  | "always-restart";
+export type ManagedProcessReloadPolicy = "keep-if-unchanged" | "always-restart";
 
 export type StartupOnceSpec = ProcessBaseSpec &
   ProcessLaunchSpec & {
@@ -800,6 +792,9 @@ export type WindowCompositionFunction = (
 
 export interface WindowManagerDefinition {
   event: import("./events").WindowManagerEventController;
+  onEnable(listener: import("./events").RuntimeEnableListener): () => void;
+  onDisable(listener: import("./events").RuntimeDisableListener): () => void;
+  preload: PreloadController;
   effect: WindowManagerEffectConfig;
   output: OutputController;
   process: ProcessController;
@@ -811,6 +806,8 @@ export interface WindowManagerDefinition {
   debug: DebugController;
   display?: DisplayConfig;
 }
+
+export interface PreloadController {}
 
 /**
  * Debug knobs. Toggles here are surfaced into compositor overlays / logs and
@@ -868,7 +865,9 @@ export interface SSDRebuildSuppressionHandle {
 }
 
 export interface RuntimeController {
-  suppressSSDRebuild(options?: SSDRebuildSuppressionOptions): SSDRebuildSuppressionHandle;
+  suppressSSDRebuild(
+    options?: SSDRebuildSuppressionOptions,
+  ): SSDRebuildSuppressionHandle;
   withSSDRebuildSuppressed<T>(
     options: SSDRebuildSuppressionOptions | undefined,
     callback: () => T,
