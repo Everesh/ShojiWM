@@ -23,9 +23,11 @@ function findPreloadPath(configPath: string): string | null {
 import {
   advanceAnimationFrame,
   beginKeyBindingRegistration,
+  beginOutputConfigurationRegistration,
   beginPointerConfigRegistration,
   beginProcessConfigRegistration,
   commitKeyBindingRegistration,
+  commitOutputConfigurationRegistration,
   commitPointerConfigRegistration,
   commitProcessConfigRegistration,
   drainPendingProcessActions,
@@ -947,10 +949,12 @@ async function main() {
   }> {
     if (!loadedConfig) {
       beginKeyBindingRegistration();
+      beginOutputConfigurationRegistration();
       beginPointerConfigRegistration();
       beginProcessConfigRegistration();
       loadedConfig = (await import(moduleUrl).finally(() => {
         commitKeyBindingRegistration();
+        commitOutputConfigurationRegistration();
         commitPointerConfigRegistration();
         commitProcessConfigRegistration();
       })) as Record<string, unknown>;

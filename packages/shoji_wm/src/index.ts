@@ -51,6 +51,9 @@ import type {
   EffectOutsets,
   OutputConfigEntry,
   OutputController,
+  OutputConfigureContext,
+  OutputConfigureFactory,
+  OutputInfo,
   OutputMode,
   OutputPositionPreference,
   OutputResolutionPreference,
@@ -132,7 +135,7 @@ import {
   commitPointerConfigRegistration,
   takePendingPointerConfig,
 } from "./pointer";
-import { OUTPUT_CONTROLLER } from "./output";
+import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
 import {
@@ -232,6 +235,8 @@ export {
   type RuntimeWindowActivateRequestEvent,
   type PointerModifierState,
   type PointerMoveAsyncListener,
+  type OutputChangeEvent,
+  type OutputChangeListener,
   type PointerMoveEvent,
   type PointerMovePoint,
   type RuntimeEventConfig,
@@ -255,6 +260,9 @@ export { createReactiveWindow } from "./reactive-window";
 export { createReactiveLayer } from "./reactive-layer";
 export {
   OUTPUT_CONTROLLER,
+  beginOutputConfigurationRegistration,
+  commitOutputConfigurationRegistration,
+  installOutputChangeEmitter,
   takePendingDisplayConfig,
   updateOutputState,
 } from "./output";
@@ -379,6 +387,7 @@ export type {
   ReactiveWaylandWindowSignals,
   CompositionNodeType,
   DisplayConfig,
+  DisplayConfigDraft,
   DisplayModePreference,
   EffectInvalidationPolicyHandle,
   AutomaticEffectInvalidationPolicyHandle,
@@ -404,7 +413,10 @@ export type {
   NoiseStageHandle,
   EffectOutsets,
   OutputConfigEntry,
+  OutputConfigureContext,
+  OutputConfigureFactory,
   OutputController,
+  OutputInfo,
   OutputMode,
   OutputPositionPreference,
   OutputResolutionPreference,
@@ -547,6 +559,10 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
   layer: LAYER_CONTROLLER,
   debug: DEBUG_CONTROLLER,
 };
+
+installOutputChangeEmitter((event) => {
+  WINDOW_MANAGER.event.emitOutputChange(event);
+});
 
 export function windowAction(action: WindowActionType): WindowActionDescriptor {
   return {

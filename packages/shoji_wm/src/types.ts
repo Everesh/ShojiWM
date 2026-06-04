@@ -497,6 +497,13 @@ export interface OutputConfigEntry {
 export type DisplayConfigDraft = Record<string, OutputConfigEntry | null>;
 
 export interface OutputStateSnapshot {
+  name?: string;
+  description?: string;
+  make?: string;
+  model?: string;
+  serial?: string;
+  connector?: string;
+  enabled?: boolean;
   resolution?: OutputMode;
   position: {
     x: number;
@@ -506,11 +513,29 @@ export interface OutputStateSnapshot {
   availableModes: OutputMode[];
 }
 
+export interface OutputInfo extends OutputStateSnapshot {
+  name: string;
+  enabled: boolean;
+}
+
+export interface OutputConfigureContext {
+  outputs: OutputInfo[];
+  current: Record<string, OutputInfo>;
+}
+
+export type OutputConfigureFactory = (
+  context: OutputConfigureContext,
+) => DisplayConfigDraft;
+
 export interface OutputController {
   readonly list: string[];
-  readonly current: Record<string, OutputStateSnapshot>;
+  readonly outputs: OutputInfo[];
+  readonly current: Record<string, OutputInfo>;
+  get(outputName: string): OutputInfo | undefined;
+  find(predicate: (output: OutputInfo) => boolean): OutputInfo | undefined;
   availableModes(outputName: string): OutputMode[];
-  applyDisplayConfig(mutator: (display: DisplayConfigDraft) => void): void;
+  configure(factory: OutputConfigureFactory): void;
+  reconfigure(): void;
 }
 
 /** Logical-pixel insets reserved by exclusive-zone layers on each edge. */

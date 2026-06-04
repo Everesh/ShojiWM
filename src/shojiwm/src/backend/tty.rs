@@ -42,7 +42,7 @@ use smithay::{
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
-            EventLoop, LoopHandle,
+            LoopHandle,
             timer::{TimeoutAction, Timer},
         },
         drm::control::{connector, crtc},
@@ -393,7 +393,7 @@ pub struct BackendData {
 
 pub fn device_added(
     state: &mut ShojiWM,
-    event_loop: &EventLoop<ShojiWM>,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
     session: &mut LibSeatSession,
     node: DrmNode,
     path: &Path,
@@ -494,13 +494,11 @@ pub fn device_added(
 
     let backend = state.tty_backends.get_mut(&node).unwrap();
 
-    let loop_handle = event_loop.handle();
-    event_loop
-        .handle()
-        .insert_source(drm_events, move |event, metadata, state| {
+    let drm_loop_handle = loop_handle.clone();
+    loop_handle.insert_source(drm_events, move |event, metadata, state| {
             if let DrmEvent::VBlank(crtc) = event {
                 trace!(?node, ?crtc, "received drm vblank");
-                frame_finish(state, &loop_handle, node, crtc, metadata);
+                frame_finish(state, &drm_loop_handle, node, crtc, metadata);
             }
         })?;
 
@@ -9311,8 +9309,121 @@ fn connector_connected(
         surface.redraw_state = TtyRedrawState::Queued;
     }
     state.apply_runtime_display_configuration();
+    state.notify_runtime_outputs_changed();
     state.schedule_redraw();
     Ok(())
+}
+
+fn connector_disconnected(
+    state: &mut ShojiWM,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    connector: connector::Info,
+) {
+    let output_name = format!(
+        "{}-{}",
+        connector.interface().as_str(),
+        connector.interface_id()
+    );
+    let Some(backend) = state.tty_backends.get_mut(&node) else {
+        return;
+    };
+    let Some(surface) = backend.surfaces.remove(&crtc) else {
+        return;
+    };
+    let output = surface.output;
+    state.space.unmap_output(&output);
+    state.screencopy_state.remove_output(&output);
+    state.output_capture_mirrors.remove(&output_name);
+    state.runtime_output_configs.remove(&output_name);
+    state.runtime_animation_outputs.remove(&output_name);
+    state.damage_blink_visible.remove(&output_name);
+    state.damage_blink_pending.remove(&output_name);
+    state.pending_decoration_damage.clear();
+    state.apply_runtime_display_configuration();
+    state.notify_runtime_outputs_changed();
+    info!(
+        ?node,
+        ?crtc,
+        output = %output_name,
+        "disconnected tty output"
+    );
+}
+
+pub fn device_changed(
+    state: &mut ShojiWM,
+    node: DrmNode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scan_result = {
+        let Some(backend) = state.tty_backends.get_mut(&node) else {
+            return Ok(());
+        };
+        backend
+            .drm_scanner
+            .scan_connectors(backend.drm_output_manager.device())?
+    };
+
+    let mut changed = false;
+    for scan in scan_result {
+        debug!(?node, ?scan, "connector scan event");
+        match scan {
+            DrmScanEvent::Connected {
+                connector,
+                crtc: Some(crtc),
+            } => {
+                connector_connected(state, node, crtc, connector)?;
+                changed = true;
+            }
+            DrmScanEvent::Disconnected {
+                connector,
+                crtc: Some(crtc),
+            } => {
+                connector_disconnected(state, node, crtc, connector);
+                changed = true;
+            }
+            DrmScanEvent::Changed {
+                connector,
+                crtc: Some(crtc),
+            } => {
+                if let Some(surface) = state
+                    .tty_backends
+                    .get_mut(&node)
+                    .and_then(|backend| backend.surfaces.get_mut(&crtc))
+                {
+                    surface.available_modes = connector.modes().to_vec();
+                }
+                state.apply_runtime_display_configuration();
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+
+    if changed {
+        state.notify_runtime_outputs_changed();
+    }
+    Ok(())
+}
+
+pub fn device_removed(state: &mut ShojiWM, node: DrmNode) {
+    let crtcs = {
+        let Some(backend) = state.tty_backends.get_mut(&node) else {
+            return;
+        };
+        backend
+            .drm_scanner
+            .crtcs()
+            .map(|(connector, crtc)| (connector.clone(), crtc))
+            .collect::<Vec<_>>()
+    };
+
+    for (connector, crtc) in crtcs {
+        connector_disconnected(state, node, crtc, connector);
+    }
+
+    state.tty_backends.remove(&node);
+    state.notify_runtime_outputs_changed();
+    info!(?node, "removed tty drm device");
 }
 
 pub fn tty_output_available_modes(

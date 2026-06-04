@@ -1,4 +1,4 @@
-import type { WaylandLayer, WaylandWindow } from "./types";
+import type { OutputInfo, WaylandLayer, WaylandWindow } from "./types";
 
 export type WindowOpenListener = (window: WaylandWindow) => void;
 export type WindowInitialConfigureListener = (window: WaylandWindow) => void;
@@ -32,6 +32,16 @@ export interface RuntimeDisableEvent {
 
 export type RuntimeEnableListener = (event: RuntimeEnableEvent) => void;
 export type RuntimeDisableListener = (event: RuntimeDisableEvent) => void;
+
+export interface OutputChangeEvent {
+  outputs: OutputInfo[];
+  current: Record<string, OutputInfo>;
+  added: OutputInfo[];
+  removed: OutputInfo[];
+  changed: OutputInfo[];
+}
+
+export type OutputChangeListener = (event: OutputChangeEvent) => void;
 
 export interface WindowResizeEdges {
   left: boolean;
@@ -205,6 +215,7 @@ export interface WindowManagerEventController {
   onWindowMaximizeRequest(listener: WindowMaximizeRequestListener): () => void;
   onWindowMinimizeRequest(listener: WindowMinimizeRequestListener): () => void;
   onWindowActivateRequest(listener: WindowActivateRequestListener): () => void;
+  onOutputChange(listener: OutputChangeListener): () => void;
   onPointerMoveAsync(listener: PointerMoveAsyncListener): () => void;
   onCreateLayer(listener: LayerCreateListener): () => void;
   onUpdateLayer(listener: LayerUpdateListener): () => void;
@@ -232,6 +243,7 @@ export interface WindowManagerEventController {
     window: WaylandWindow,
     event: RuntimeWindowActivateRequestEvent,
   ): boolean;
+  emitOutputChange(event: OutputChangeEvent): void;
   emitPointerMoveAsync(event: PointerMoveEvent): Promise<boolean>;
   emitCreateLayer(layer: WaylandLayer): void;
   emitUpdateLayer(layer: WaylandLayer): void;
@@ -258,6 +270,7 @@ export function createWindowManagerEventController(): WindowManagerEventControll
   const maximizeRequestListeners = new Set<WindowMaximizeRequestListener>();
   const minimizeRequestListeners = new Set<WindowMinimizeRequestListener>();
   const activateRequestListeners = new Set<WindowActivateRequestListener>();
+  const outputChangeListeners = new Set<OutputChangeListener>();
   const pointerMoveAsyncListeners = new Set<PointerMoveAsyncListener>();
   const createLayerListeners = new Set<LayerCreateListener>();
   const updateLayerListeners = new Set<LayerUpdateListener>();
@@ -320,6 +333,10 @@ export function createWindowManagerEventController(): WindowManagerEventControll
     onWindowActivateRequest(listener) {
       activateRequestListeners.add(listener);
       return () => activateRequestListeners.delete(listener);
+    },
+    onOutputChange(listener) {
+      outputChangeListeners.add(listener);
+      return () => outputChangeListeners.delete(listener);
     },
     onPointerMoveAsync(listener) {
       pointerMoveAsyncListeners.add(listener);
@@ -415,6 +432,11 @@ export function createWindowManagerEventController(): WindowManagerEventControll
         listener({ ...event, window });
       }
       return true;
+    },
+    emitOutputChange(event) {
+      for (const listener of outputChangeListeners) {
+        listener(event);
+      }
     },
     async emitPointerMoveAsync(event) {
       if (pointerMoveAsyncListeners.size === 0) {

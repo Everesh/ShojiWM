@@ -29,7 +29,7 @@ use smithay::{
         drm::DrmNode,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{Session, libseat::LibSeatSession},
-        udev::{UdevBackend, primary_gpu},
+        udev::{UdevBackend, UdevEvent, primary_gpu},
     },
     reexports::{calloop::EventLoop, input::Libinput, wayland_server::Display},
 };
@@ -37,7 +37,7 @@ use tracing::{info, trace, warn};
 
 use crate::{
     activation_environment::publish_activation_environment,
-    backend::tty::{device_added, render_if_needed},
+    backend::tty::{device_added, device_changed, device_removed, render_if_needed},
     config::tty_output_names_match,
     state::ShojiWM,
 };
@@ -172,7 +172,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
         );
         device_added(
             &mut state,
-            &event_loop,
+            &event_loop.handle(),
             &mut session,
             candidate.node,
             &candidate.path,
@@ -187,6 +187,48 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+
+    let udev_loop_handle = event_loop.handle();
+    let mut udev_session = session.clone();
+    event_loop
+        .handle()
+        .insert_source(udev, move |event, _, state| {
+            state.record_event_source_wake("udev");
+            match event {
+                UdevEvent::Added { device_id, path } => {
+                    let Ok(node) = DrmNode::from_dev_id(device_id) else {
+                        warn!(?device_id, ?path, "failed to resolve added drm node");
+                        return;
+                    };
+                    if state.tty_backends.contains_key(&node) {
+                        return;
+                    }
+                    info!(?node, ?path, "udev added drm device");
+                    if let Err(err) =
+                        device_added(state, &udev_loop_handle, &mut udev_session, node, &path)
+                    {
+                        warn!(?node, ?path, ?err, "failed to initialize added drm device");
+                    }
+                    state.notify_runtime_outputs_changed();
+                }
+                UdevEvent::Changed { device_id } => {
+                    let Ok(node) = DrmNode::from_dev_id(device_id) else {
+                        warn!(?device_id, "failed to resolve changed drm node");
+                        return;
+                    };
+                    if let Err(err) = device_changed(state, node) {
+                        warn!(?node, ?err, "failed to process drm device change");
+                    }
+                }
+                UdevEvent::Removed { device_id } => {
+                    let Ok(node) = DrmNode::from_dev_id(device_id) else {
+                        warn!(?device_id, "failed to resolve removed drm node");
+                        return;
+                    };
+                    device_removed(state, node);
+                }
+            }
+        })?;
 
     if state.space.outputs().next().is_none() {
         return Err(

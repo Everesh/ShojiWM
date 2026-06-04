@@ -19,6 +19,7 @@ import {
   loadShader,
   ManagedWindow,
   read,
+  type DisplayConfigDraft,
 } from "shoji_wm";
 import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
 import {
@@ -134,7 +135,9 @@ WINDOW_MANAGER.key.bind("fps", "Super+Shift+F", () => {
   WINDOW_MANAGER.debug.fpsCounter = fpsCounter;
 });
 
-WINDOW_MANAGER.output.applyDisplayConfig((display) => {
+WINDOW_MANAGER.output.configure(() => {
+  const display: DisplayConfigDraft = {};
+
   display["eDP-1"] = {
     resolution: "best",
     position: "auto",
@@ -165,6 +168,8 @@ WINDOW_MANAGER.output.applyDisplayConfig((display) => {
     position: "auto",
     scale: 1.6,
   };
+
+  return display;
 });
 
 WINDOW_MANAGER.effect.background_effect = compileEffect({
@@ -195,6 +200,10 @@ WINDOW_MANAGER.event.onFocus((window, focused) => {
 
 WINDOW_MANAGER.event.onPointerMoveAsync((event) => {
   HYBRID_WINDOW_MANAGER.onPointerMove(event);
+});
+
+WINDOW_MANAGER.event.onOutputChange((event) => {
+  HYBRID_WINDOW_MANAGER.onOutputChange(event);
 });
 
 WINDOW_MANAGER.event.onCreateLayer(() => {

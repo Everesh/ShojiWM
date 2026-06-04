@@ -390,6 +390,13 @@ pub struct LayerDesiredSizeSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaylandOutputSnapshot {
+    pub name: String,
+    pub description: Option<String>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial: Option<String>,
+    pub connector: Option<String>,
+    pub enabled: bool,
     pub resolution: Option<OutputModeSnapshot>,
     pub position: OutputPositionSnapshot,
     pub scale: f64,

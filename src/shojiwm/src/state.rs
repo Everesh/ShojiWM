@@ -1425,6 +1425,7 @@ impl ShojiWM {
             .outputs()
             .map(|output| {
                 let name = output.name();
+                let physical = output.physical_properties();
                 let available_modes = tty_output_available_modes(self, &name)
                     .unwrap_or_else(|| output.modes())
                     .into_iter()
@@ -1441,8 +1442,15 @@ impl ShojiWM {
                 });
                 let location = output.current_location();
                 (
-                    name,
+                    name.clone(),
                     WaylandOutputSnapshot {
+                        name: name.clone(),
+                        description: Some(output.description()),
+                        make: Some(physical.make),
+                        model: Some(physical.model),
+                        serial: Some(physical.serial_number),
+                        connector: Some(name),
+                        enabled: true,
                         resolution,
                         position: OutputPositionSnapshot {
                             x: location.x,
@@ -1612,6 +1620,14 @@ impl ShojiWM {
     pub fn sync_runtime_display_state(&self) {
         self.decoration_evaluator
             .sync_display_state(self.snapshot_outputs());
+    }
+
+    pub fn notify_runtime_outputs_changed(&mut self) {
+        self.sync_runtime_display_state();
+        self.runtime_scheduler_enabled = true;
+        self.runtime_poll_dirty = true;
+        self.request_tty_maintenance("runtime-output-change");
+        self.schedule_redraw();
     }
 
     pub fn consume_runtime_display_config(&mut self, update: Option<RuntimeDisplayConfigUpdate>) {

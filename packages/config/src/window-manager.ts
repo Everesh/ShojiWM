@@ -6,6 +6,7 @@ import {
   seconds,
   WINDOW_MANAGER,
   type EasingFunction,
+  type OutputChangeEvent,
   type PointerMoveEvent,
   type ReadonlySignal,
   type WaylandWindow,
@@ -178,6 +179,77 @@ export class HybridWindowManager {
   public onPointerMove(event: PointerMoveEvent) {
     this.syncWorkspaces();
     this.currentMonitor = event.outputName ?? this.currentMonitor;
+  }
+
+  public onOutputChange(event: OutputChangeEvent) {
+    const liveMonitors = new Set(event.outputs.map((output) => output.name));
+    if (liveMonitors.size === 0) {
+      return;
+    }
+
+    const fallbackMonitor =
+      (this.currentMonitor && liveMonitors.has(this.currentMonitor)
+        ? this.currentMonitor
+        : undefined) ?? event.outputs[0]?.name;
+    if (!fallbackMonitor) {
+      return;
+    }
+
+    const orphanedWorkspaces = Array.from(this.workspaces.values()).filter(
+      (workspace) => !liveMonitors.has(workspace.monitor),
+    );
+    if (orphanedWorkspaces.length === 0) {
+      this.syncWorkspaces();
+      this.refreshUsableAreaLayouts();
+      return;
+    }
+
+    const orphanedActiveWorkspaceByMonitor = new Map(
+      Array.from(this.activeWorkspaceByMonitor.entries()).filter(
+        ([monitor]) => !liveMonitors.has(monitor),
+      ),
+    );
+
+    for (const monitor of Array.from(this.activeWorkspaceByMonitor.keys())) {
+      if (!liveMonitors.has(monitor)) {
+        this.activeWorkspaceByMonitor.delete(monitor);
+      }
+    }
+
+    for (const workspace of orphanedWorkspaces) {
+      const oldKey = workspaceKey(workspace.monitor, workspace.index);
+      this.workspaces.delete(oldKey);
+
+      const targetMonitor = fallbackMonitor;
+      const targetIndex = this.availableWorkspaceIndex(
+        targetMonitor,
+        workspace.index,
+      );
+      const wasActiveOnRemovedMonitor =
+        orphanedActiveWorkspaceByMonitor.get(workspace.monitor) ===
+        workspace.index;
+      workspace.moveToMonitor(targetMonitor, targetIndex);
+      this.workspaces.set(workspaceKey(targetMonitor, targetIndex), workspace);
+      if (
+        wasActiveOnRemovedMonitor ||
+        !this.activeWorkspaceByMonitor.has(targetMonitor)
+      ) {
+        this.activeWorkspaceByMonitor.set(targetMonitor, targetIndex);
+      }
+      workspace.setVisible(workspace.isActive());
+      workspace.applyLayout({
+        suppressSSDRebuild: false,
+        animate: false,
+        preserveMissingActive: true,
+      });
+    }
+
+    if (!liveMonitors.has(this.currentMonitor)) {
+      this.currentMonitor = fallbackMonitor;
+    }
+    this.syncWorkspaces();
+    this.refreshUsableAreaLayouts();
+    this.syncWorkspaceVisibility();
   }
 
   public onOpen(window: WaylandWindow) {
@@ -744,7 +816,7 @@ export class HybridWindowManager {
         monitor,
         this.naturalRootRect,
         (window) => this.maximizedRectForWindow(window),
-        () => this.getActiveWorkspaceIndex(monitor),
+        (monitor) => this.getActiveWorkspaceIndex(monitor),
       );
       this.workspaces.set(key, workspace);
     }
@@ -753,6 +825,17 @@ export class HybridWindowManager {
 
   private getActiveWorkspaceIndex(monitor: string): number {
     return this.activeWorkspaceByMonitor.get(monitor) ?? 1;
+  }
+
+  private availableWorkspaceIndex(monitor: string, preferredIndex: number) {
+    if (!this.workspaces.has(workspaceKey(monitor, preferredIndex))) {
+      return preferredIndex;
+    }
+    let index = 1;
+    while (this.workspaces.has(workspaceKey(monitor, index))) {
+      index += 1;
+    }
+    return index;
   }
 
   private activateWorkspace(monitor: string, index: number) {
@@ -1041,7 +1124,7 @@ export class HybridWindowManager {
 }
 
 export class Workspace {
-  public readonly index: number;
+  public index: number;
   private readonly windows: WaylandWindow[] = [];
   private readonly naturalRootRect: (
     window: WaylandWindow,
@@ -1049,7 +1132,7 @@ export class Workspace {
   private readonly maximizedRootRect: (
     window: WaylandWindow,
   ) => ManagedWindowRect;
-  private readonly activeWorkspaceIndex: () => number;
+  private readonly activeWorkspaceIndex: (monitor: string) => number;
   private readonly tileWidthByWindowId = new Map<string, number>();
   private readonly restoredWindowStateById = new Map<
     string,
@@ -1059,7 +1142,7 @@ export class Workspace {
   private visibilityAnimationToken = 0;
   private draggingWindowId: string | null = null;
   private scrollOffset = 0;
-  public readonly monitor: string;
+  public monitor: string;
   public isTiled = false;
 
   public constructor(
@@ -1067,13 +1150,35 @@ export class Workspace {
     monitor: string,
     naturalRootRect: (window: WaylandWindow) => ManagedWindowRect,
     maximizedRootRect: (window: WaylandWindow) => ManagedWindowRect,
-    activeWorkspaceIndex: () => number,
+    activeWorkspaceIndex: (monitor: string) => number,
   ) {
     this.index = index;
     this.monitor = monitor;
     this.naturalRootRect = naturalRootRect;
     this.maximizedRootRect = maximizedRootRect;
     this.activeWorkspaceIndex = activeWorkspaceIndex;
+  }
+
+  public moveToMonitor(monitor: string, index: number) {
+    this.monitor = monitor;
+    this.index = index;
+    for (const window of this.windows) {
+      this.syncWindowVisibleOutputs(window);
+      if (window.state[WINDOW_STATE_MAXIMIZED]()) {
+        window.state[WINDOW_STATE_RECT].set(this.maximizedRootRect(window));
+        continue;
+      }
+
+      if (!this.isTiled || !this.shouldTile(window)) {
+        const rect = this.clampRectToViewport(
+          window.state[WINDOW_STATE_RECT](),
+        );
+        window.state[WINDOW_STATE_RECT].set(rect);
+        window.state[WINDOW_STATE_FLOATING_RECT].set(
+          this.isTiled ? this.viewportRectToFloatingContentRect(rect) : null,
+        );
+      }
+    }
   }
 
   public addWindow(window: WaylandWindow): boolean {
@@ -1215,7 +1320,7 @@ export class Workspace {
   }
 
   public isActive(): boolean {
-    return this.activeWorkspaceIndex() === this.index;
+    return this.activeWorkspaceIndex(this.monitor) === this.index;
   }
 
   public refreshUsableAreaLayout() {
@@ -1861,6 +1966,22 @@ export class Workspace {
       y: read(rect.y),
       width: read(rect.width),
       height: read(rect.height),
+    };
+  }
+
+  private clampRectToViewport(rect: ManagedWindowRect): ManagedWindowRect {
+    const viewport = this.tileViewportRect();
+    const width = read(rect.width);
+    const height = read(rect.height);
+    const minX = read(viewport.x);
+    const minY = read(viewport.y);
+    const maxX = minX + Math.max(0, read(viewport.width) - width);
+    const maxY = minY + Math.max(0, read(viewport.height) - height);
+    return {
+      x: clamp(read(rect.x), minX, maxX),
+      y: clamp(read(rect.y), minY, maxY),
+      width,
+      height,
     };
   }
 
