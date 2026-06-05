@@ -367,7 +367,11 @@ export class HybridWindowManager {
   }
 
   public onOutputChange(event: OutputChangeEvent) {
-    const liveMonitors = new Set(event.outputs.map((output) => output.name));
+    const liveMonitors = new Set(
+      event.outputs
+        .filter((output) => output.enabled)
+        .map((output) => output.name),
+    );
     if (liveMonitors.size === 0) {
       return;
     }
@@ -375,7 +379,7 @@ export class HybridWindowManager {
     const fallbackMonitor =
       (this.currentMonitor && liveMonitors.has(this.currentMonitor)
         ? this.currentMonitor
-        : undefined) ?? event.outputs[0]?.name;
+        : undefined) ?? Array.from(liveMonitors)[0];
     if (!fallbackMonitor) {
       return;
     }
@@ -404,6 +408,10 @@ export class HybridWindowManager {
     for (const workspace of orphanedWorkspaces) {
       const oldKey = workspaceKey(workspace.monitor, workspace.index);
       this.workspaces.delete(oldKey);
+
+      if (workspace.windowCount() === 0) {
+        continue;
+      }
 
       const targetMonitor = fallbackMonitor;
       const targetIndex = this.availableWorkspaceIndex(
@@ -964,7 +972,8 @@ export class HybridWindowManager {
     const byMonitor = new Map<string, WorkspacesViewWorkspace[]>();
     for (const workspace of this.workspaces.values()) {
       const active =
-        this.activeWorkspaceByMonitor.get(workspace.monitor) === workspace.index;
+        this.activeWorkspaceByMonitor.get(workspace.monitor) ===
+        workspace.index;
       const list = byMonitor.get(workspace.monitor) ?? [];
       list.push({
         index: workspace.index,

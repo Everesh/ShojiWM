@@ -76,7 +76,9 @@ use smithay::{
 use xcursor::parser::Image;
 
 use crate::activation_environment::publish_activation_environment;
-use crate::backend::tty::{apply_tty_output_mode, tty_output_available_modes};
+use crate::backend::tty::{
+    apply_tty_output_mode, tty_connected_outputs, tty_output_available_modes,
+};
 use crate::backend::visual::{inverse_transform_point, transformed_rect, transformed_root_rect};
 use crate::runtime_input::{
     RuntimeInputConfig, RuntimeInputConfigUpdate, RuntimeInputDeviceSnapshot,
@@ -114,7 +116,7 @@ use crate::{
     },
     config::{
         DisplayConfig, RuntimeDisplayConfigUpdate, RuntimeDisplayModePreference,
-        RuntimeOutputConfig, RuntimeOutputPositionPreference,
+        RuntimeOutputConfig, RuntimeOutputMode, RuntimeOutputPositionPreference,
     },
     cursor::Cursor,
     drawing::PointerElement,
@@ -1515,8 +1517,8 @@ impl ShojiWM {
     }
 
     pub fn snapshot_outputs(&self) -> std::collections::BTreeMap<String, WaylandOutputSnapshot> {
-        self.space
-            .outputs()
+        self.runtime_connected_outputs()
+            .into_iter()
             .map(|output| {
                 let name = output.name();
                 let physical = output.physical_properties();
@@ -1543,8 +1545,8 @@ impl ShojiWM {
                         make: Some(physical.make),
                         model: Some(physical.model),
                         serial: Some(physical.serial_number),
-                        connector: Some(name),
-                        enabled: true,
+                        connector: Some(name.clone()),
+                        enabled: self.runtime_output_workspace_enabled(&name),
                         resolution,
                         position: OutputPositionSnapshot {
                             x: location.x,
@@ -1556,6 +1558,32 @@ impl ShojiWM {
                 )
             })
             .collect()
+    }
+
+    fn runtime_connected_outputs(&self) -> Vec<Output> {
+        let mut outputs = std::collections::BTreeMap::new();
+        for output in self.space.outputs() {
+            outputs.insert(output.name(), output.clone());
+        }
+        for output in tty_connected_outputs(self) {
+            outputs.insert(output.name(), output);
+        }
+        outputs.into_values().collect()
+    }
+
+    fn runtime_output_mode_setting(&self, output_name: &str) -> RuntimeOutputMode {
+        self.runtime_output_configs
+            .get(output_name)
+            .map(RuntimeOutputConfig::mode)
+            .unwrap_or(RuntimeOutputMode::Extend)
+    }
+
+    fn runtime_output_workspace_enabled(&self, output_name: &str) -> bool {
+        self.runtime_output_mode_setting(output_name) == RuntimeOutputMode::Extend
+    }
+
+    pub fn runtime_output_render_enabled(&self, output_name: &str) -> bool {
+        self.runtime_output_mode_setting(output_name) != RuntimeOutputMode::Disabled
     }
 
     fn resolve_runtime_output_mode(
@@ -1615,6 +1643,25 @@ impl ShojiWM {
         ((physical_size.w as f64) / scale.max(0.1)).round().max(1.0) as i32
     }
 
+    fn resolve_runtime_output_mirror_mode(
+        &self,
+        output: &Output,
+        source_mode: OutputMode,
+    ) -> Option<OutputMode> {
+        let modes =
+            tty_output_available_modes(self, &output.name()).unwrap_or_else(|| output.modes());
+        let matching_size = modes
+            .into_iter()
+            .filter(|mode| mode.size == source_mode.size)
+            .collect::<Vec<_>>();
+        if matching_size.is_empty() {
+            return output.current_mode();
+        }
+        matching_size
+            .into_iter()
+            .min_by_key(|mode| (i64::from(mode.refresh) - i64::from(source_mode.refresh)).abs())
+    }
+
     pub fn apply_runtime_display_config_update(&mut self, update: RuntimeDisplayConfigUpdate) {
         for (output_name, config) in update.outputs {
             match config {
@@ -1627,12 +1674,30 @@ impl ShojiWM {
             }
         }
         self.apply_runtime_display_configuration();
+        self.notify_runtime_outputs_changed();
     }
 
     pub fn apply_runtime_display_configuration(&mut self) {
-        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        let outputs = self.runtime_connected_outputs();
         if outputs.is_empty() {
             return;
+        }
+
+        let mut extend_output_names = outputs
+            .iter()
+            .filter_map(|output| {
+                (self.runtime_output_mode_setting(&output.name()) == RuntimeOutputMode::Extend)
+                    .then(|| output.name())
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if extend_output_names.is_empty()
+            && let Some(output) = outputs.first()
+        {
+            warn!(
+                output = %output.name(),
+                "runtime display config disabled every output; keeping one output extended"
+            );
+            extend_output_names.insert(output.name());
         }
 
         let mut target_modes = std::collections::BTreeMap::new();
@@ -1653,6 +1718,9 @@ impl ShojiWM {
         let mut manual_positions = std::collections::BTreeMap::new();
         let mut auto_outputs = Vec::new();
         for output in &outputs {
+            if !extend_output_names.contains(&output.name()) {
+                continue;
+            }
             match self
                 .runtime_output_configs
                 .get(&output.name())
@@ -1695,8 +1763,35 @@ impl ShojiWM {
             }
         }
 
+        let mut mirror_outputs = Vec::new();
+        let mut disabled_outputs = Vec::new();
+        for output in &outputs {
+            let name = output.name();
+            if extend_output_names.contains(&name) {
+                continue;
+            }
+            match self.runtime_output_mode_setting(&name) {
+                RuntimeOutputMode::Mirror => mirror_outputs.push(output.clone()),
+                RuntimeOutputMode::Disabled | RuntimeOutputMode::Extend => {
+                    disabled_outputs.push(output.clone())
+                }
+            }
+        }
+
+        for output in disabled_outputs {
+            let name = output.name();
+            self.space.unmap_output(&output);
+            self.output_capture_mirrors.remove(&name);
+            self.runtime_animation_outputs.remove(&name);
+            self.damage_blink_visible.remove(&name);
+            self.damage_blink_pending.remove(&name);
+        }
+
         for output in outputs {
             let name = output.name();
+            if !extend_output_names.contains(&name) {
+                continue;
+            }
             let target_mode = target_modes.get(&name).and_then(|mode| *mode);
             let target_position = target_positions
                 .get(&name)
@@ -1717,6 +1812,42 @@ impl ShojiWM {
 
             output.change_current_state(target_mode, None, target_scale, Some(target_position));
             self.space.map_output(&output, target_position);
+        }
+
+        for output in mirror_outputs {
+            let name = output.name();
+            let Some(source_name) = self
+                .runtime_output_configs
+                .get(&name)
+                .and_then(|config| config.source.as_ref())
+                .filter(|source| extend_output_names.contains(*source))
+                .cloned()
+            else {
+                self.space.unmap_output(&output);
+                continue;
+            };
+            let Some(source_position) = target_positions.get(&source_name).copied() else {
+                self.space.unmap_output(&output);
+                continue;
+            };
+            let source_mode = target_modes.get(&source_name).and_then(|mode| *mode);
+            let target_mode = source_mode
+                .and_then(|mode| self.resolve_runtime_output_mirror_mode(&output, mode))
+                .or_else(|| output.current_mode());
+            let target_scale_value = target_scales
+                .get(&source_name)
+                .copied()
+                .unwrap_or_else(|| output.current_scale().fractional_scale())
+                .max(0.1);
+            let target_scale = Some(OutputScale::Fractional(target_scale_value));
+
+            if let Some(mode) = target_mode
+                && output.current_mode() != Some(mode)
+            {
+                let _ = apply_tty_output_mode(self, &name, mode);
+            }
+            output.change_current_state(target_mode, None, target_scale, Some(source_position));
+            self.space.map_output(&output, source_position);
         }
 
         for output in self.space.outputs() {

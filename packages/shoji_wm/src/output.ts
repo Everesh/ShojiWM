@@ -74,25 +74,34 @@ function cloneDisplayDraft(draft: DisplayConfigDraft): DisplayConfigDraft {
   return Object.fromEntries(
     Object.entries(draft).map(([name, config]) => [
       name,
-      config
-        ? {
-            resolution:
-              typeof config.resolution === "string"
-                ? config.resolution
-                : config.resolution
-                  ? { ...config.resolution }
-                  : undefined,
-            position:
-              typeof config.position === "string"
-                ? config.position
-                : config.position
-                  ? { ...config.position }
-                  : undefined,
-            scale: config.scale,
-          }
-        : null,
+      config ? cloneOutputConfigEntry(config) : null,
     ]),
   );
+}
+
+function cloneOutputConfigEntry(config: OutputConfigEntry): OutputConfigEntry {
+  if (config.mode === "disabled") {
+    return { mode: "disabled" };
+  }
+  if (config.mode === "mirror") {
+    return { mode: "mirror", source: config.source };
+  }
+  return {
+    mode: "extend",
+    resolution:
+      typeof config.resolution === "string"
+        ? config.resolution
+        : config.resolution
+          ? { ...config.resolution }
+          : undefined,
+    position:
+      typeof config.position === "string"
+        ? config.position
+        : config.position
+          ? { ...config.position }
+          : undefined,
+    scale: config.scale,
+  };
 }
 
 function normalizeOutputConfig(draft: DisplayConfigDraft): DisplayConfigDraft {
@@ -102,11 +111,7 @@ function normalizeOutputConfig(draft: DisplayConfigDraft): DisplayConfigDraft {
       normalized[name] = null;
       continue;
     }
-    normalized[name] = {
-      resolution: config.resolution,
-      position: config.position,
-      scale: config.scale,
-    };
+    normalized[name] = cloneOutputConfigEntry(config);
   }
   return normalized;
 }
@@ -127,8 +132,10 @@ function displayDraftsEqual(
 
 function configureContext(): OutputConfigureContext {
   const current = cloneOutputState(currentOutputState);
+  const connected = Object.values(current);
   return {
-    outputs: Object.values(current),
+    connected,
+    outputs: connected.filter((output) => output.enabled),
     current,
   };
 }
@@ -277,10 +284,12 @@ export function takePendingDisplayConfig(): DisplayConfigDraft | undefined {
 
 export const OUTPUT_CONTROLLER: OutputController = {
   get list() {
-    return Object.keys(currentOutputState);
+    return Object.values(currentOutputState)
+      .filter((output) => output.enabled)
+      .map((output) => output.name);
   },
   get outputs() {
-    return currentOutputList();
+    return currentOutputList().filter((output) => output.enabled);
   },
   get current() {
     return currentOutputRecord();

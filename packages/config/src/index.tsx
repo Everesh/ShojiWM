@@ -90,7 +90,9 @@ function scheduleWorkspaceBroadcast() {
   });
 }
 
-WORKSPACE_IPC.handle("workspaces.get", () => HYBRID_WINDOW_MANAGER.viewForIpc());
+WORKSPACE_IPC.handle("workspaces.get", () =>
+  HYBRID_WINDOW_MANAGER.viewForIpc(),
+);
 WORKSPACE_IPC.handle("workspaces.switch", (params) => {
   const direction = (params as { direction?: number } | undefined)?.direction;
   HYBRID_WINDOW_MANAGER.switchWorkspace(direction === -1 ? -1 : 1);
@@ -164,39 +166,53 @@ WINDOW_MANAGER.key.bind("fps", "Super+Shift+F", () => {
   WINDOW_MANAGER.debug.fpsCounter = fpsCounter;
 });
 
-WINDOW_MANAGER.output.configure(() => {
+WINDOW_MANAGER.output.configure((context) => {
   const display: DisplayConfigDraft = {};
 
   display["eDP-1"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.8,
   };
   display["eDP-2"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.8,
   };
   display["HDMI-A-1"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.5,
   };
   display["DP-1"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.5,
   };
   display["DP-4"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.5,
   };
   display["DP-2"] = {
+    mode: "extend",
     resolution: "best",
     position: "auto",
     scale: 1.6,
   };
+
+  const isDocked = context.connected.some(
+    (output) => output.name === "HDMI-A-1",
+  );
+  if (isDocked) {
+    display["eDP-1"] = { mode: "disabled" };
+    display["eDP-2"] = { mode: "disabled" };
+  }
 
   return display;
 });

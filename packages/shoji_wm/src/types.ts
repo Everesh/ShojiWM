@@ -488,11 +488,26 @@ export type OutputPositionPreference =
       y: number;
     };
 
-export interface OutputConfigEntry {
+export interface OutputExtendConfigEntry {
+  mode?: "extend";
   resolution?: OutputResolutionPreference;
   position?: OutputPositionPreference;
   scale?: number;
 }
+
+export interface OutputDisabledConfigEntry {
+  mode: "disabled";
+}
+
+export interface OutputMirrorConfigEntry {
+  mode: "mirror";
+  source: string;
+}
+
+export type OutputConfigEntry =
+  | OutputExtendConfigEntry
+  | OutputDisabledConfigEntry
+  | OutputMirrorConfigEntry;
 
 export type DisplayConfigDraft = Record<string, OutputConfigEntry | null>;
 
@@ -519,6 +534,7 @@ export interface OutputInfo extends OutputStateSnapshot {
 }
 
 export interface OutputConfigureContext {
+  connected: OutputInfo[];
   outputs: OutputInfo[];
   current: Record<string, OutputInfo>;
 }

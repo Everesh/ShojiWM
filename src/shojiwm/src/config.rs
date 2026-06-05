@@ -30,9 +30,25 @@ pub struct RuntimeDisplayConfigUpdate {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeOutputConfig {
+    pub mode: Option<RuntimeOutputMode>,
+    pub source: Option<String>,
     pub resolution: Option<RuntimeDisplayModePreference>,
     pub position: Option<RuntimeOutputPositionPreference>,
     pub scale: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeOutputMode {
+    Extend,
+    Disabled,
+    Mirror,
+}
+
+impl RuntimeOutputConfig {
+    pub fn mode(&self) -> RuntimeOutputMode {
+        self.mode.unwrap_or(RuntimeOutputMode::Extend)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]

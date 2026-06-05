@@ -1237,6 +1237,9 @@ fn render_surface(
         .and_then(|backend| backend.surfaces.get(&crtc))
         .map(|surface| surface.output.clone())
         .unwrap();
+    if !state.runtime_output_render_enabled(&output.name()) {
+        return Ok(RenderSurfaceOutcome::Skipped);
+    }
     if std::env::var_os("SHOJI_SCREENCOPY_PROFILE").is_some() {
         let frame_pending = state
             .tty_backends
@@ -5458,11 +5461,8 @@ fn log_kinetic_window_render_state_debug(
 
     let root_rect = decoration.layout.root.rect;
     let visual_root = transformed_root_rect(root_rect, decoration.visual_transform);
-    let root_physical = crate::backend::visual::logical_rect_to_physical_rect(
-        root_rect,
-        output_geo.loc,
-        scale,
-    );
+    let root_physical =
+        crate::backend::visual::logical_rect_to_physical_rect(root_rect, output_geo.loc, scale);
     let visual_physical =
         crate::backend::visual::logical_rect_to_physical_rect(visual_root, output_geo.loc, scale);
     let managed_rect = decoration.managed_window.rect.map(|rect| {
@@ -9590,6 +9590,16 @@ pub fn tty_output_available_modes(
         }
     }
     None
+}
+
+pub fn tty_connected_outputs(state: &crate::state::ShojiWM) -> Vec<Output> {
+    let mut outputs = Vec::new();
+    for backend in state.tty_backends.values() {
+        for surface in backend.surfaces.values() {
+            outputs.push(surface.output.clone());
+        }
+    }
+    outputs
 }
 
 pub fn apply_tty_output_mode(
