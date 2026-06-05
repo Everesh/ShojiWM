@@ -137,6 +137,29 @@ interface WorkspaceWindowSnapshot {
   maximized: boolean;
 }
 
+/**
+ * Compact, serializable view of the workspace layout for external clients
+ * (e.g. the bar) consumed over the IPC transport. Per-monitor so a per-output
+ * bar can render just its own workspaces.
+ */
+export interface WorkspacesViewWorkspace {
+  index: number;
+  windowCount: number;
+  isTiled: boolean;
+  active: boolean;
+}
+
+export interface WorkspacesViewMonitor {
+  name: string;
+  active: number;
+  workspaces: WorkspacesViewWorkspace[];
+}
+
+export interface WorkspacesView {
+  currentMonitor: string;
+  monitors: WorkspacesViewMonitor[];
+}
+
 interface WorkspaceGestureState {
   monitor: string;
   currentIndex: number;
@@ -863,24 +886,37 @@ export class HybridWindowManager {
   }
 
   public switchWorkspace(direction: -1 | 1) {
-    this.workspaceGesture = null;
-    this.syncWorkspaces();
     const monitor = this.currentMonitor || WINDOW_MANAGER.output.list.at(0);
     if (!monitor) {
       return;
     }
-
     const currentIndex = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
-    const nextIndex = Math.max(1, currentIndex + direction);
-    if (nextIndex === currentIndex) {
+    this.switchWorkspaceTo(monitor, Math.max(1, currentIndex + direction));
+  }
+
+  /**
+   * Animated switch to an explicit workspace index on a monitor. Direction is
+   * inferred from the current index so the same vertical slide/fade transition
+   * as keyboard/gesture switching plays (used by the IPC `workspaces.activate`).
+   */
+  public switchWorkspaceTo(monitor: string, targetIndex: number) {
+    this.workspaceGesture = null;
+    this.syncWorkspaces();
+    if (!monitor || targetIndex < 1) {
       return;
     }
 
+    const currentIndex = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
+    if (targetIndex === currentIndex) {
+      return;
+    }
+    const direction: -1 | 1 = targetIndex > currentIndex ? 1 : -1;
+
     const fromWorkspace = this.ensureWorkspace(monitor, currentIndex);
-    const toWorkspace = this.ensureWorkspace(monitor, nextIndex);
+    const toWorkspace = this.ensureWorkspace(monitor, targetIndex);
     const distance = this.workspaceTransitionDistance(monitor);
 
-    this.activeWorkspaceByMonitor.set(monitor, nextIndex);
+    this.activeWorkspaceByMonitor.set(monitor, targetIndex);
     this.currentMonitor = monitor;
 
     for (const workspace of this.workspaces.values()) {
@@ -917,6 +953,62 @@ export class HybridWindowManager {
       this.workspaceForMonitor(this.currentMonitor) ??
       this.workspaces.values().next().value
     );
+  }
+
+  /**
+   * Compact per-monitor workspace view for external clients (the bar) over IPC.
+   */
+  public viewForIpc(): WorkspacesView {
+    this.syncWorkspaces();
+
+    const byMonitor = new Map<string, WorkspacesViewWorkspace[]>();
+    for (const workspace of this.workspaces.values()) {
+      const active =
+        this.activeWorkspaceByMonitor.get(workspace.monitor) === workspace.index;
+      const list = byMonitor.get(workspace.monitor) ?? [];
+      list.push({
+        index: workspace.index,
+        windowCount: workspace.windowCount(),
+        isTiled: workspace.isTiled,
+        active,
+      });
+      byMonitor.set(workspace.monitor, list);
+    }
+
+    const monitors: WorkspacesViewMonitor[] = WINDOW_MANAGER.output.list.map(
+      (name) => {
+        const active = this.activeWorkspaceByMonitor.get(name) ?? 1;
+        // Only surface workspaces that have windows, plus the active one
+        // (which stays visible even while empty). Bare, empty, non-active
+        // workspaces are hidden from the list.
+        const workspaces = (byMonitor.get(name) ?? []).filter(
+          (workspace) => workspace.windowCount > 0 || workspace.active,
+        );
+        if (!workspaces.some((workspace) => workspace.index === active)) {
+          workspaces.push({
+            index: active,
+            windowCount: 0,
+            isTiled: false,
+            active: true,
+          });
+        }
+        workspaces.sort((a, b) => a.index - b.index);
+        return { name, active, workspaces };
+      },
+    );
+
+    return { currentMonitor: this.currentMonitor, monitors };
+  }
+
+  /**
+   * Activate a specific workspace on a monitor (external/IPC entry point).
+   * Plays the same slide/fade transition as keyboard/gesture switching.
+   */
+  public activate(monitor: string, index: number) {
+    if (!monitor || index < 1) {
+      return;
+    }
+    this.switchWorkspaceTo(monitor, index);
   }
 
   public getWindowZIndex(window: WaylandWindow): ReadonlySignal<number> {
@@ -1738,6 +1830,10 @@ export class Workspace {
 
   public hasWindow(window: WaylandWindow): boolean {
     return this.windows.some((current) => current.id === window.id);
+  }
+
+  public windowCount(): number {
+    return this.windows.length;
   }
 
   public isRestoringWindow(windowId: string): boolean {

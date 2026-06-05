@@ -371,6 +371,14 @@ export {
   type PollHandle,
 } from "./scheduler";
 export {
+  createIpcServer,
+  defaultSocketPath,
+  type IpcClient,
+  type IpcHandler,
+  type IpcRequestMessage,
+  type IpcServer,
+} from "./ipc";
+export {
   dropLayerDependencies,
   dropWindowDependencies,
   enterLayerNodeDependencyScope,

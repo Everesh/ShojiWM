@@ -22,6 +22,7 @@ import {
   type DisplayConfigDraft,
 } from "shoji_wm";
 import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
+import { createIpcServer } from "shoji_wm/ipc";
 import {
   HybridWindowManager,
   TITLEBAR_HEIGHT,
@@ -56,6 +57,57 @@ WINDOW_MANAGER.onEnable((event) => {
       HYBRID_WINDOW_MANAGER.restore(snapshot);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// External IPC: expose the workspace layout to clients such as the bar.
+//   workspaces.get      -> WorkspacesView                     (request/response)
+//   workspaces.switch   { direction: -1 | 1 }                 (command)
+//   workspaces.activate { monitor: string, index: number }   (command)
+//   workspaces.changed  -> WorkspacesView                     (broadcast)
+// ---------------------------------------------------------------------------
+const WORKSPACE_IPC = createIpcServer();
+let lastWorkspacesJson = "";
+let workspaceBroadcastQueued = false;
+
+function broadcastWorkspaces() {
+  const view = HYBRID_WINDOW_MANAGER.viewForIpc();
+  const json = JSON.stringify(view);
+  if (json === lastWorkspacesJson) {
+    return;
+  }
+  lastWorkspacesJson = json;
+  WORKSPACE_IPC.broadcast("workspaces.changed", view);
+}
+
+// Coalesce many state mutations within one tick into a single diffed broadcast.
+function scheduleWorkspaceBroadcast() {
+  if (workspaceBroadcastQueued) {
+    return;
+  }
+  workspaceBroadcastQueued = true;
+  void Promise.resolve().then(() => {
+    workspaceBroadcastQueued = false;
+    broadcastWorkspaces();
+  });
+}
+
+WORKSPACE_IPC.handle("workspaces.get", () => HYBRID_WINDOW_MANAGER.viewForIpc());
+WORKSPACE_IPC.handle("workspaces.switch", (params) => {
+  const direction = (params as { direction?: number } | undefined)?.direction;
+  HYBRID_WINDOW_MANAGER.switchWorkspace(direction === -1 ? -1 : 1);
+  scheduleWorkspaceBroadcast();
+});
+WORKSPACE_IPC.handle("workspaces.activate", (params) => {
+  const request = params as { monitor?: string; index?: number } | undefined;
+  if (request?.monitor && typeof request.index === "number") {
+    HYBRID_WINDOW_MANAGER.activate(request.monitor, request.index);
+    scheduleWorkspaceBroadcast();
+  }
+});
+
+WINDOW_MANAGER.onDisable(() => {
+  WORKSPACE_IPC.close();
 });
 
 WINDOW_MANAGER.process.once("fcitx5", {
@@ -108,6 +160,7 @@ WINDOW_MANAGER.key.bind("screenshot-freeze", "Super+Ctrl+P", () => {
 });
 WINDOW_MANAGER.key.bind("toggle-tiling-mode", "Super+S", () => {
   HYBRID_WINDOW_MANAGER.toggleCurrentWorkspaceTiling();
+  scheduleWorkspaceBroadcast();
 });
 WINDOW_MANAGER.key.bind("close-focused-window", "Super+Q", () => {
   HYBRID_WINDOW_MANAGER.closeFocusedWindow();
@@ -126,9 +179,11 @@ WINDOW_MANAGER.key.bind("tile-focus-right", "Super+Ctrl+Right", () => {
 });
 WINDOW_MANAGER.key.bind("workspace-prev", "Super+Ctrl+Up", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(-1);
+  scheduleWorkspaceBroadcast();
 });
 WINDOW_MANAGER.key.bind("workspace-next", "Super+Ctrl+Down", () => {
   HYBRID_WINDOW_MANAGER.switchWorkspace(1);
+  scheduleWorkspaceBroadcast();
 });
 
 let fpsCounter = false;
@@ -209,14 +264,17 @@ WINDOW_MANAGER.event.onOpen((window) => {
 
 WINDOW_MANAGER.event.onFirstCommit((window) => {
   HYBRID_WINDOW_MANAGER.onFirstCommit(window);
+  scheduleWorkspaceBroadcast();
 });
 
 WINDOW_MANAGER.event.onStartClose((window) => {
   HYBRID_WINDOW_MANAGER.onStartClose(window);
+  scheduleWorkspaceBroadcast();
 });
 
 WINDOW_MANAGER.event.onClose((window) => {
   HYBRID_WINDOW_MANAGER.onClose(window);
+  scheduleWorkspaceBroadcast();
 });
 
 WINDOW_MANAGER.event.onFocus((window, focused) => {
@@ -229,10 +287,12 @@ WINDOW_MANAGER.event.onPointerMoveAsync((event) => {
 
 WINDOW_MANAGER.event.onGestureSwipeAsync((event) => {
   HYBRID_WINDOW_MANAGER.onGestureSwipe(event);
+  scheduleWorkspaceBroadcast();
 });
 
 WINDOW_MANAGER.event.onOutputChange((event) => {
   HYBRID_WINDOW_MANAGER.onOutputChange(event);
+  scheduleWorkspaceBroadcast();
 });
 
 WINDOW_MANAGER.event.onCreateLayer(() => {
@@ -267,6 +327,7 @@ WINDOW_MANAGER.event.onWindowMinimizeRequest((event) => {
 
 WINDOW_MANAGER.event.onWindowActivateRequest((event) => {
   HYBRID_WINDOW_MANAGER.onWindowActivateRequest(event);
+  scheduleWorkspaceBroadcast();
 });
 
 function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
