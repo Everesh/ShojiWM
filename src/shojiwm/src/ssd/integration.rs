@@ -110,6 +110,16 @@ fn runtime_dirty_debug_enabled() -> bool {
     })
 }
 
+fn minimize_debug_enabled() -> bool {
+    use std::sync::OnceLock;
+
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SHOJI_MINIMIZE_DEBUG")
+            .is_some_and(|value| value != "0" && !value.is_empty())
+    })
+}
+
 /// `SHOJI_ANIMATION_DEBUG=1` traces every schedule / cancel / per-frame advance
 /// of a managed-window animation. Useful for diagnosing animation "ghost"
 /// states (window ends up offscreen, hit-test missing, etc.).
@@ -511,12 +521,15 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         window_id: &str,
         window: Option<&WaylandWindowSnapshot>,
         now_ms: u64,
+        force_full_reevaluation: bool,
     ) -> Result<DecorationCachedEvaluationResult, DecorationEvaluationError> {
         match self {
             Self::Static(_) => Err(DecorationEvaluationError::RuntimeProtocol(
                 "cached window evaluation unsupported for static evaluator".into(),
             )),
-            Self::Node(evaluator) => evaluator.evaluate_cached_window(window_id, window, now_ms),
+            Self::Node(evaluator) => {
+                evaluator.evaluate_cached_window(window_id, window, now_ms, force_full_reevaluation)
+            }
         }
     }
 
@@ -678,6 +691,7 @@ impl DecorationRuntimeEvaluator {
             evaluator.set_async_event_sender(sender);
         }
     }
+
 
     pub fn as_node(&self) -> Option<&super::NodeDecorationEvaluator> {
         match self {
@@ -1378,14 +1392,32 @@ impl ShojiWM {
     ) -> Vec<crate::ssd::RuntimeWindowAction> {
         let mut deferred = Vec::with_capacity(actions.len());
         for action in actions {
-            if hot_reload_debug_enabled() {
+            if hot_reload_debug_enabled() || minimize_debug_enabled() {
+                let cached_state = self.window_decorations.iter().find_map(|(_, decoration)| {
+                    (decoration.snapshot.id == action.window_id).then(|| {
+                        (
+                            decoration.managed_window.idle,
+                            decoration.managed_window.visible,
+                            decoration.managed_window.interactive,
+                            decoration.managed_window_animation_active,
+                            decoration.visual_transform.opacity,
+                            decoration.static_managed_window.idle,
+                            decoration.static_managed_window.visible,
+                            decoration.static_visual_transform.opacity,
+                        )
+                    })
+                });
                 info!(
                     window_id = %action.window_id,
                     action = ?action.action,
                     channel = ?action.channel,
                     animation_channel = ?action.animation.as_ref().map(|animation| animation.channel.as_str()),
                     rect = ?action.animation.as_ref().and_then(|animation| animation.rect.as_ref()),
-                    "hot reload: pre-advance window action"
+                    opacity = ?action.animation.as_ref().and_then(|animation| animation.opacity.as_ref()),
+                    runtime_dirty = self.runtime_dirty_window_ids.contains(&action.window_id),
+                    runtime_managed_only = self.runtime_managed_only_window_ids.contains(&action.window_id),
+                    cached_state = ?cached_state,
+                    "runtime action debug: pre-advance window action"
                 );
             }
             match action.action {
@@ -1419,7 +1451,10 @@ impl ShojiWM {
             .managed_window_animations
             .get(&window_id)
             .is_some_and(|channels| !channels.is_empty());
-        if managed_animation_debug_enabled() || hot_reload_debug_enabled() {
+        if managed_animation_debug_enabled()
+            || hot_reload_debug_enabled()
+            || minimize_debug_enabled()
+        {
             let had_existing = self
                 .managed_window_animations
                 .get(&window_id)
@@ -1434,6 +1469,8 @@ impl ShojiWM {
                 rect = ?animation.rect,
                 offset = ?animation.offset,
                 opacity = ?animation.opacity,
+                runtime_dirty = self.runtime_dirty_window_ids.contains(&window_id),
+                runtime_managed_only = self.runtime_managed_only_window_ids.contains(&window_id),
                 "managed animation: schedule"
             );
         }
@@ -1507,6 +1544,9 @@ impl ShojiWM {
                     d.managed_window_animation_active,
                     d.layout.root.rect,
                     d.visual_transform.opacity,
+                    d.static_managed_window.idle,
+                    d.static_managed_window.visible,
+                    d.static_visual_transform.opacity,
                 )
             })
         });
@@ -1525,7 +1565,9 @@ impl ShojiWM {
         let mut just_scheduled = std::collections::HashSet::new();
         just_scheduled.insert(inserted_window_id.clone());
         self.apply_managed_window_rects(&just_scheduled);
-        if (managed_animation_debug_enabled() || hot_reload_debug_enabled())
+        if (managed_animation_debug_enabled()
+            || hot_reload_debug_enabled()
+            || minimize_debug_enabled())
             && let Some(post) = self.window_decorations.iter().find_map(|(_, d)| {
                 (d.snapshot.id == inserted_window_id).then(|| {
                     (
@@ -1535,6 +1577,9 @@ impl ShojiWM {
                         d.managed_window_animation_active,
                         d.layout.root.rect,
                         d.visual_transform.opacity,
+                        d.static_managed_window.idle,
+                        d.static_managed_window.visible,
+                        d.static_visual_transform.opacity,
                         d.managed_window_allows_render(),
                     )
                 })
@@ -1545,6 +1590,8 @@ impl ShojiWM {
                 channel = %channel,
                 pre = ?pre_decoration,
                 post = ?post,
+                runtime_dirty = self.runtime_dirty_window_ids.contains(&inserted_window_id),
+                runtime_managed_only = self.runtime_managed_only_window_ids.contains(&inserted_window_id),
                 "managed animation: schedule pre/post state"
             );
         }
@@ -2058,11 +2105,24 @@ impl ShojiWM {
             let snapshot = self.snapshot_window(&window);
             let snapshot_id = snapshot.id.clone();
             let window_was_runtime_dirty = self.runtime_dirty_window_ids.contains(&snapshot_id);
-            if runtime_dirty_debug_enabled() && window_was_runtime_dirty {
+            let minimize_debug = minimize_debug_enabled();
+            if (runtime_dirty_debug_enabled() || minimize_debug) && window_was_runtime_dirty {
                 let cached_snapshot = self
                     .window_decorations
                     .get(&window)
                     .map(|cached| &cached.snapshot);
+                let cached_state = self.window_decorations.get(&window).map(|cached| {
+                    (
+                        cached.managed_window.idle,
+                        cached.managed_window.visible,
+                        cached.managed_window.interactive,
+                        cached.managed_window_animation_active,
+                        cached.visual_transform.opacity,
+                        cached.static_managed_window.idle,
+                        cached.static_managed_window.visible,
+                        cached.static_visual_transform.opacity,
+                    )
+                });
                 info!(
                     window_id = %snapshot_id,
                     title = %snapshot.title,
@@ -2071,6 +2131,7 @@ impl ShojiWM {
                     cached_app_id = ?cached_snapshot.and_then(|snapshot| snapshot.app_id.as_deref()),
                     runtime_managed_only = self.runtime_managed_only_window_ids.contains(&snapshot_id),
                     target_output = ?target_output_name,
+                    cached_state = ?cached_state,
                     "runtime dirty debug: refresh candidate"
                 );
             }
@@ -2083,7 +2144,7 @@ impl ShojiWM {
                 window_was_runtime_dirty,
             );
             if !should_process {
-                if runtime_dirty_debug_enabled() && window_was_runtime_dirty {
+                if (runtime_dirty_debug_enabled() || minimize_debug) && window_was_runtime_dirty {
                     info!(
                         window_id = %snapshot_id,
                         title = %snapshot.title,
@@ -2098,9 +2159,57 @@ impl ShojiWM {
                 self.window_primary_output_names
                     .insert(window.clone(), primary_output_name);
             }
-            let client_rect = match self.window_client_rect(&window) {
-                Some(rect) => rect,
-                None => continue,
+            let (client_rect, client_rect_source) = match self.window_client_rect(&window) {
+                Some(rect) => (rect, "live"),
+                None => {
+                    let cached_client_rect = self
+                        .window_decorations
+                        .get(&window)
+                        .map(|cached| cached.client_rect);
+                    if window_was_runtime_dirty
+                        || force_runtime_reevaluate
+                        || force_output_animation_reevaluate
+                    {
+                        if let Some(rect) = cached_client_rect {
+                            if runtime_dirty_debug_enabled() || minimize_debug {
+                                info!(
+                                    window_id = %snapshot_id,
+                                    title = %snapshot.title,
+                                    cached_client_rect = ?rect,
+                                    window_was_runtime_dirty,
+                                    force_runtime_reevaluate,
+                                    force_output_animation_reevaluate,
+                                    "runtime dirty debug: using cached client rect"
+                                );
+                            }
+                            (rect, "cached")
+                        } else {
+                            if runtime_dirty_debug_enabled() || minimize_debug {
+                                info!(
+                                    window_id = %snapshot_id,
+                                    title = %snapshot.title,
+                                    window_was_runtime_dirty,
+                                    force_runtime_reevaluate,
+                                    force_output_animation_reevaluate,
+                                    "runtime dirty debug: skipped missing live and cached client rect"
+                                );
+                            }
+                            continue;
+                        }
+                    } else {
+                        if runtime_dirty_debug_enabled() || minimize_debug {
+                            info!(
+                                window_id = %snapshot_id,
+                                title = %snapshot.title,
+                                window_was_runtime_dirty,
+                                force_runtime_reevaluate,
+                                force_output_animation_reevaluate,
+                                "runtime dirty debug: skipped missing live client rect"
+                            );
+                        }
+                        continue;
+                    }
+                }
             };
             let layout_scale = self.decoration_layout_scale_for_window(&window);
             let window_raster_scale = self.decoration_raster_scale_for_window(&window);
@@ -2153,6 +2262,25 @@ impl ShojiWM {
                 || force_output_animation_reevaluate
                 || runtime_state_changed
                 || window_was_runtime_dirty;
+            let force_full_cached_reevaluation = force_runtime_reevaluate
+                || (window_was_runtime_dirty
+                    && !self.runtime_managed_only_window_ids.contains(&snapshot_id));
+            if (runtime_dirty_debug_enabled() || minimize_debug)
+                && (window_was_runtime_dirty || runtime_dirty)
+            {
+                info!(
+                    window_id = %snapshot_id,
+                    title = %snapshot.title,
+                    client_rect_source,
+                    had_cached_decoration,
+                    snapshot_changed,
+                    runtime_dirty,
+                    runtime_state_changed,
+                    window_was_runtime_dirty,
+                    cached_effective_client_rect = ?cached_effective_client_rect,
+                    "runtime dirty debug: refresh branch decision"
+                );
+            }
             if !had_cached_decoration || snapshot_changed {
                 let started_at = Instant::now();
                 let previous_root = self.window_decorations.get(&window).map(|cached| {
@@ -2473,7 +2601,7 @@ impl ShojiWM {
                     let started_at = Instant::now();
                     let previous_root =
                         transformed_root_rect(cached.layout.root.rect, cached.visual_transform);
-                    if runtime_dirty_debug_enabled() {
+                    if runtime_dirty_debug_enabled() || minimize_debug {
                         info!(
                             window_id = %snapshot_id,
                             title = %snapshot.title,
@@ -2481,13 +2609,24 @@ impl ShojiWM {
                             runtime_state_changed,
                             window_was_runtime_dirty,
                             force_runtime_reevaluate,
+                            force_full_cached_reevaluation,
                             force_output_animation_reevaluate,
                             force_async_asset_refresh,
+                            client_rect_source,
+                            cached_dynamic_idle = cached.managed_window.idle,
+                            cached_dynamic_visible = cached.managed_window.visible,
+                            cached_dynamic_interactive = cached.managed_window.interactive,
+                            cached_animation_active = cached.managed_window_animation_active,
+                            cached_dynamic_opacity = cached.visual_transform.opacity,
+                            cached_static_idle = cached.static_managed_window.idle,
+                            cached_static_visible = cached.static_managed_window.visible,
+                            cached_static_opacity = cached.static_visual_transform.opacity,
                             "runtime dirty debug: evaluating cached window"
                         );
                     }
                     let evaluate_started_at = Instant::now();
-                    let mut evaluation = if runtime_state_changed {
+                    let mut evaluation = if runtime_state_changed && !force_full_cached_reevaluation
+                    {
                         match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
                             Ok(evaluation) => evaluation.into(),
                             Err(error) => {
@@ -2508,6 +2647,7 @@ impl ShojiWM {
                             &snapshot.id,
                             Some(&snapshot),
                             now_ms,
+                            force_full_cached_reevaluation,
                         ) {
                             Ok(evaluation) => evaluation,
                             Err(error) => {
@@ -2537,6 +2677,26 @@ impl ShojiWM {
                         }
                     };
                     let evaluate_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
+                    if runtime_dirty_debug_enabled() || minimize_debug {
+                        info!(
+                            window_id = %snapshot_id,
+                            title = %snapshot.title,
+                            managed_window_only = evaluation.managed_window_only,
+                            dirty_node_ids = ?evaluation.dirty_node_ids,
+                            action_count = evaluation.actions.len(),
+                            action_kinds = ?evaluation
+                                .actions
+                                .iter()
+                                .map(|action| (&action.action, action.channel.as_deref(), action.animation.as_ref().map(|animation| animation.channel.as_str())))
+                                .collect::<Vec<_>>(),
+                            next_idle = evaluation.managed_window.idle,
+                            next_visible = evaluation.managed_window.visible,
+                            next_interactive = evaluation.managed_window.interactive,
+                            next_transform_opacity = evaluation.transform.opacity,
+                            next_poll_in_ms = ?evaluation.next_poll_in_ms,
+                            "runtime dirty debug: cached evaluation result"
+                        );
+                    }
                     pending_display_config_updates.push(evaluation.display_config.clone());
                     pending_key_binding_config_updates.push(evaluation.key_binding_config.clone());
                     pending_pointer_config_updates.push(evaluation.pointer_config.clone());
@@ -3021,6 +3181,7 @@ impl ShojiWM {
             .cloned()
             .collect::<Vec<_>>();
         for window_id in closing_dirty_ids {
+            let force_full_cached_reevaluation = self.runtime_dirty_window_ids.contains(&window_id);
             let closing_raster_scale = self
                 .closing_window_snapshots
                 .get(&window_id)
@@ -3035,9 +3196,12 @@ impl ShojiWM {
                 let previous_shader_buffers = closing.decoration.shader_buffers.clone();
                 let previous_text_buffers = closing.decoration.text_buffers.clone();
                 let previous_icon_buffers = closing.decoration.icon_buffers.clone();
-                let mut evaluation = self
-                    .decoration_evaluator
-                    .evaluate_cached_window(&window_id, None, now_ms)?;
+                let mut evaluation = self.decoration_evaluator.evaluate_cached_window(
+                    &window_id,
+                    None,
+                    now_ms,
+                    force_full_cached_reevaluation,
+                )?;
                 pending_display_config_updates.push(evaluation.display_config.clone());
                 pending_process_config_updates.push(evaluation.process_config.clone());
                 pending_process_actions.extend(evaluation.process_actions.clone());

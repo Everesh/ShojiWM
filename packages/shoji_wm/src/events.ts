@@ -133,6 +133,7 @@ export type RuntimeWindowMoveEvent = Omit<WindowMoveEvent, "window">;
 export type WindowStateRequestSource =
   | "api"
   | "client-csd"
+  | "xdg-activation"
   | "xwayland"
   | "keybind";
 export type WindowActivateRequestSource =

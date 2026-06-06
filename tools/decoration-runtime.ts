@@ -244,6 +244,7 @@ interface EvaluateCachedRequest {
   kind: "evaluateCached";
   windowId: string;
   snapshot?: WaylandWindowSnapshot;
+  forceFullReevaluation?: boolean;
   nowMs: number;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
@@ -1319,6 +1320,7 @@ async function main() {
               effectConfig,
               request.windowId,
               request.snapshot,
+              request.forceFullReevaluation ?? false,
             );
             const keyBindingConfig = pendingKeyBindingConfigPayload();
             const pointerConfig = pendingPointerConfigPayload();
@@ -1628,6 +1630,7 @@ function evaluateCached(
   effectConfig: RuntimeEffectConfig,
   windowId: string,
   snapshot?: WaylandWindowSnapshot,
+  forceFullReevaluation = false,
 ): {
   serialized?: unknown;
   transform: WindowTransform;
@@ -1700,7 +1703,8 @@ function evaluateCached(
     dirtyWindowIds.delete(windowId);
   }
 
-  if (takeManagedWindowOnlyDirty(windowId)) {
+  const managedWindowOnlyDirty = takeManagedWindowOnlyDirty(windowId);
+  if (managedWindowOnlyDirty && !forceFullReevaluation) {
     const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
     if (updated) {
       debugLabel("evaluate-cached-managed-dirty-with-updated-tree", {
@@ -1729,7 +1733,7 @@ function evaluateCached(
   }
 
   const dirtyNodeIds = takeDirtyWindowNodeIds(windowId);
-  if (updated) {
+  if (updated && !forceFullReevaluation) {
     debugLabel("evaluate-cached-updated-tree", {
       windowId,
       dirtyNodeIds,
@@ -1744,10 +1748,19 @@ function evaluateCached(
       nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
     };
   }
-  const reevaluated = entry.cache.reevaluate(dirtyNodeIds);
+  // A full window dirty can coincide with node-scoped dirty marks from
+  // derived signals. Passing those node ids to reevaluate() selects the
+  // serialized-tree patch path, which deliberately does not recreate the
+  // composition root or its ManagedWindow props. State transitions such as
+  // unminimize would then leave the old idle/opacity static state behind and
+  // disappear again once the visual animation completed.
+  const reevaluated = forceFullReevaluation
+    ? entry.cache.reevaluate()
+    : entry.cache.reevaluate(dirtyNodeIds);
   debugLabel("evaluate-cached-reevaluate", {
     windowId,
     dirtyNodeIds,
+    forceFullReevaluation,
     labels: summarizeSerializedLabels(reevaluated.serialized),
   });
   return {
@@ -1755,7 +1768,7 @@ function evaluateCached(
     transform: entry.cache.lastTransform,
     managedWindow: entry.cache.lastManagedWindow,
     windowEffects: evaluateWindowEffects(effectConfig, windowId, entry),
-    dirtyNodeIds,
+    dirtyNodeIds: forceFullReevaluation ? [] : dirtyNodeIds,
     nextPollInMs: hasActiveAnimations() ? 0 : peekNextPollDelay(),
   };
 }
@@ -2518,8 +2531,13 @@ function collectRuntimeMutationState(): {
       nextPollInMs === undefined ? delay : Math.min(nextPollInMs, delay);
   }
 
+  const fullDirtyWindowIds = Array.from(dirtyWindowIds);
+  const fullDirtyWindowIdSet = new Set(fullDirtyWindowIds);
+  const managedOnlyWindowIds = managedWindowOnlyDirtyIds().filter(
+    (windowId) => !fullDirtyWindowIdSet.has(windowId),
+  );
   const nextDirtyWindowIds = Array.from(
-    new Set([...dirtyWindowIds, ...managedWindowOnlyDirtyIds()]),
+    new Set([...fullDirtyWindowIds, ...managedOnlyWindowIds]),
   );
   dirtyWindowIds.clear();
   const managedOnlyFastPathInvalidated =
@@ -2531,9 +2549,12 @@ function collectRuntimeMutationState(): {
   }
   const nextDirtyLayerIds = Array.from(dirtyLayerIds);
   dirtyLayerIds.clear();
+  for (const windowId of fullDirtyWindowIds) {
+    takeManagedWindowOnlyDirty(windowId);
+  }
   const dirtyManagedWindowIds = managedOnlyFastPathInvalidated
     ? []
-    : nextDirtyWindowIds.filter((windowId) =>
+    : managedOnlyWindowIds.filter((windowId) =>
         isManagedWindowOnlyDirty(windowId),
       );
   const dirtyWindowNodeIds = Object.fromEntries(

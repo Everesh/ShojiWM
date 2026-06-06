@@ -28,6 +28,7 @@ import {
   TITLEBAR_HEIGHT,
   WINDOW_BORDER_PX,
   WINDOW_STATE_MINIMIZED,
+  WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
   WINDOW_STATE_TILE_DRAGGING,
   WINDOW_STATE_VISIBLE_OUTPUTS,
   WINDOW_STATE_RECT,
@@ -420,9 +421,9 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
   const forceRectSize = computed(
     () => window.isResizable() && !window.isTransient(),
   );
-  const minimized = window.state[WINDOW_STATE_MINIMIZED];
+  const minimizeVisualIdle = window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE];
   const inactive = computed(
-    () => minimized() || (!workspaceVisible() && !tileDragging()),
+    () => minimizeVisualIdle() || (!workspaceVisible() && !tileDragging()),
   );
 
   const borderColor = window.isFocused((focused) =>

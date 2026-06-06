@@ -667,6 +667,12 @@ impl ShojiWM {
             })
             .expect("Failed to init runtime async event source.");
 
+        // Register a SIGUSR1 source so the Node runtime can wake the event
+        // loop after handling an IPC request. tsx forks a child node and does
+        // not pass arbitrary inherited fds through, so signals (carried by
+        // PID) are the only reliable way to cross the wrapper.
+        Self::register_runtime_wake_signal(event_loop);
+
         let damage_blink_enabled = std::env::args().any(|arg| arg == "--damage-blink")
             || std::env::var_os("SHOJI_DAMAGE_BLINK")
                 .is_some_and(|value| value != "0" && !value.is_empty());
@@ -1247,16 +1253,27 @@ impl ShojiWM {
     }
 
     fn tick_runtime_scheduler(&mut self) -> u64 {
+        self.tick_runtime_scheduler_with(false)
+    }
+
+    /// `force=true` skips the idle-fast-path early returns so the runtime is
+    /// actually queried even when no animations / polls are pending. Used by
+    /// the runtime wake source: an IPC handler in TS just mutated state and we
+    /// need to pull the resulting dirty actions through before the next idle
+    /// poll would naturally fire (~250 ms later).
+    fn tick_runtime_scheduler_with(&mut self, force: bool) -> u64 {
         self.refresh_runtime_processes();
         let managed_window_animation_active = !self.managed_window_animations.is_empty();
-        if !self.runtime_scheduler_enabled
+        if !force
+            && !self.runtime_scheduler_enabled
             && !self.runtime_process_supervision_enabled
             && !managed_window_animation_active
         {
             return 250;
         }
 
-        if managed_window_animation_active
+        if !force
+            && managed_window_animation_active
             && !self.runtime_scheduler_enabled
             && !self.runtime_process_supervision_enabled
         {
@@ -1362,6 +1379,27 @@ impl ShojiWM {
             Err(error) => {
                 debug!(?error, "failed to schedule runtime scheduler kick");
             }
+        }
+    }
+
+    fn register_runtime_wake_signal(event_loop: &mut EventLoop<Self>) {
+        use calloop::signals::{Signal, Signals};
+
+        let signals = match Signals::new(&[Signal::SIGUSR1]) {
+            Ok(s) => s,
+            Err(error) => {
+                warn!(?error, "failed to create SIGUSR1 source");
+                return;
+            }
+        };
+        let insert = event_loop
+            .handle()
+            .insert_source(signals, |_event, _, state| {
+                state.record_event_source_wake("runtime-wake-signal");
+                let _ = state.tick_runtime_scheduler_with(true);
+            });
+        if let Err(error) = insert {
+            warn!(?error, "failed to register runtime wake signal source");
         }
     }
 
@@ -2048,7 +2086,9 @@ impl ShojiWM {
                     "runtime dirty debug: mark window dirty"
                 );
             }
-            if managed_only.contains(&window_id) {
+            if managed_only.contains(&window_id)
+                && !self.runtime_dirty_window_ids.contains(&window_id)
+            {
                 self.runtime_managed_only_window_ids
                     .insert(window_id.clone());
             } else {

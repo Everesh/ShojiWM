@@ -35,6 +35,13 @@ pub mod xwayland_satellite;
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Block SIGUSR1 in the main thread *before* spawning any threads.
+    // The TS runtime uses SIGUSR1 to wake the compositor after IPC-driven
+    // state changes; calloop's signalfd source reads it from a single
+    // controlled point. Subsequent threads inherit the mask, so no random
+    // worker can absorb the signal first.
+    block_runtime_wake_signal();
+
     let args = CliArgs::parse();
     init_logging(&args)?;
     install_panic_hook();
@@ -51,6 +58,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     backend.run()?;
 
     Ok(())
+}
+
+fn block_runtime_wake_signal() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGUSR1);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
 }
 
 fn install_panic_hook() {

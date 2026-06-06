@@ -64,6 +64,7 @@ pub trait DecorationEvaluator {
         _window_id: &str,
         _window: Option<&WaylandWindowSnapshot>,
         _now_ms: u64,
+        _force_full_reevaluation: bool,
     ) -> Result<DecorationCachedEvaluationResult, DecorationEvaluationError> {
         Err(DecorationEvaluationError::RuntimeProtocol(
             "cached window evaluation unsupported".into(),
@@ -781,6 +782,8 @@ enum RuntimeRequest<'a> {
         window_id: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         snapshot: Option<&'a WaylandWindowSnapshot>,
+        #[serde(rename = "forceFullReevaluation")]
+        force_full_reevaluation: bool,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -1307,6 +1310,14 @@ impl NodeDecorationEvaluator {
         }
     }
 
+    fn apply_runtime_wake_pid_to_command(&self, command: &mut Command) {
+        // Communicate our PID to the runtime so its IPC handlers can send
+        // SIGUSR1 here to wake the compositor loop. tsx forks a child node and
+        // does not pass extra inherited fds, so the only reliable cross-wrapper
+        // wake channel is a signal.
+        command.env("SHOJI_RUNTIME_WAKE_PID", std::process::id().to_string());
+    }
+
     pub fn set_async_event_sender(&self, sender: CalloopSender<DecorationRuntimeAsyncInvocation>) {
         if let Ok(mut guard) = self.async_event_sender.lock() {
             *guard = Some(sender);
@@ -1558,6 +1569,7 @@ impl NodeDecorationEvaluator {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+        self.apply_runtime_wake_pid_to_command(&mut command);
 
         let mut child = command.spawn()?;
         let stderr_log = spawn_stderr_drain(&mut child);
@@ -1605,6 +1617,7 @@ impl NodeDecorationEvaluator {
         command.stdin(Stdio::null());
         command.stdout(Stdio::null());
         command.stderr(Stdio::piped());
+        self.apply_runtime_wake_pid_to_command(&mut command);
 
         let mut child = command.spawn()?;
         let stderr_log = spawn_stderr_drain(&mut child);
@@ -2418,6 +2431,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         window_id: &str,
         window: Option<&WaylandWindowSnapshot>,
         now_ms: u64,
+        force_full_reevaluation: bool,
     ) -> Result<DecorationCachedEvaluationResult, DecorationEvaluationError> {
         let mut runtime_guard = self.runtime.lock().map_err(|_| {
             DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
@@ -2440,6 +2454,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             request_id,
             window_id,
             snapshot: window,
+            force_full_reevaluation,
             now_ms,
             display_state: &display_state,
             input_state: &input_state,

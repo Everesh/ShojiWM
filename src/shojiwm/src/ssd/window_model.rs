@@ -208,6 +208,7 @@ pub struct WindowMoveEventSnapshot {
 pub enum WindowStateRequestSourceSnapshot {
     Api,
     ClientCsd,
+    XdgActivation,
     Xwayland,
     Keybind,
 }

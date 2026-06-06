@@ -24,6 +24,39 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 
+// SHOJI_RUNTIME_WAKE_PID: PID of the parent Rust compositor process. After an
+// IPC handler mutates state, we send `SIGUSR1` to that PID so the compositor's
+// signalfd source picks up the wake and runs an immediate scheduler tick.
+// Signal-based wakes are used (instead of an inherited fd) because `tsx`
+// internally re-spawns `node` and does not propagate arbitrary inherited fds,
+// so any pipe/socketpair end becomes unusable in the child runtime.
+const wakePid: number | null = (() => {
+  const env =
+    (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env ?? {};
+  const raw = env.SHOJI_RUNTIME_WAKE_PID;
+  if (!raw) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+})();
+
+const procRef = globalThis as {
+  process?: {
+    kill?: (pid: number, signal: string) => boolean;
+  };
+};
+
+export function wakeRust(): void {
+  if (wakePid === null) return;
+  const kill = procRef.process?.kill;
+  if (!kill) return;
+  try {
+    kill(wakePid, "SIGUSR1");
+  } catch {
+    // The compositor process has gone away; nothing to wake.
+  }
+}
+
 export interface IpcClient {
   /** Send an unsolicited event to this single client. */
   send(event: string, payload: unknown): void;
@@ -119,6 +152,11 @@ export function createIpcServer(
       if (request.id != null) {
         writeFrame(socket, { id: request.id, error: String(error) });
       }
+    } finally {
+      // Most handlers mutate config-side state (HYBRID_WINDOW_MANAGER, etc.)
+      // that the compositor only picks up on the next scheduler tick. Wake the
+      // Rust side so the change is visible without the 250 ms idle delay.
+      wakeRust();
     }
   };
 

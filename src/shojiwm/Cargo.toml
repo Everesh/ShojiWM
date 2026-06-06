@@ -33,3 +33,11 @@ cosmic-text = "0.17.2"
 png = "0.17.16"
 resvg = "0.45.1"
 mimalloc = "0.1.52"
+# Direct calloop dep with the `signals` feature so we can listen for SIGUSR1
+# from the TS runtime (tsx spawns node as a child, breaking any inherited fd,
+# so we use a Linux signal as the wake mechanism instead).
+calloop = { version = "0.14.0", features = ["signals"] }
+# Used at the very top of main() to block SIGUSR1 process-wide so the signalfd
+# source in calloop receives it deterministically (without random threads
+# catching it before we can read).
+libc = "0.2"

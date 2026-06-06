@@ -4,6 +4,7 @@ import {
   cubicBezier,
   createManagedPoll,
   markManagedWindowDirty,
+  markWindowDirty,
   read,
   seconds,
   WINDOW_MANAGER,
@@ -34,6 +35,12 @@ export const WINDOW_STATE_RESTORE_RECT =
 export const WINDOW_STATE_MINIMIZED = createWindowState<boolean>("minimized", {
   default: false,
 });
+export const WINDOW_STATE_MINIMIZE_VISUAL_IDLE = createWindowState<boolean>(
+  "minimizeVisualIdle",
+  {
+    default: false,
+  },
+);
 export const WINDOW_STATE_MAXIMIZED = createWindowState<boolean>("maximized", {
   default: false,
 });
@@ -78,6 +85,10 @@ const UNMAXIMIZE_GRAB_ANIMATION_DURATION = 90;
 const WINDOW_MANAGEMENT_EASING = cubicBezier(0.1, 0.9, 0.2, 1.0);
 const WINDOW_OPEN_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 const WINDOW_CLOSE_EASING = cubicBezier(0.3, -0.3, 0, 1);
+const WINDOW_MINIMIZE_RECT_EASING = cubicBezier(0.3, -0.3, 0, 1);
+const WINDOW_UNMINIMIZE_RECT_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
+const WINDOW_MINIMIZE_OPACITY_EASING = cubicBezier(0.3, -0.3, 0, 1);
+const WINDOW_UNMINIMIZE_OPACITY_EASING = cubicBezier(0.1, 1.1, 0.1, 1.1);
 export const TILE_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_SWITCH_ANIMATION_DURATION = seconds(0.5);
 const WORKSPACE_GESTURE_FINGERS = 3;
@@ -106,6 +117,11 @@ const STRICT_MANAGED_WINDOW_ONLY_REBUILD_SUPPRESSION = {
 const MANAGED_WINDOW_ONLY_ANIMATION = {
   suppressSSDRebuild: true,
 } as const;
+
+function markWindowCompositionDirty(window: WaylandWindow): void {
+  markWindowDirty(window.id);
+}
+
 interface LayoutOptions {
   suppressSSDRebuild?: boolean;
   animate?: boolean;
@@ -253,6 +269,7 @@ function sanitizeGestureSpeedFactor(
 
 const OPEN_ANIMATION_CHANNEL = "window.open";
 const CLOSE_ANIMATION_CHANNEL = "window.close";
+const MINIMIZE_ANIMATION_CHANNEL = "window.minimize";
 const WORKSPACE_VISUAL_ANIMATION_CHANNEL = "workspace.visual";
 const WORKSPACE_VISUAL_RECT_ANIMATION_CHANNEL = `${WORKSPACE_VISUAL_ANIMATION_CHANNEL}.rect`;
 const WORKSPACE_VISUAL_OPACITY_ANIMATION_CHANNEL = `${WORKSPACE_VISUAL_ANIMATION_CHANNEL}.opacity`;
@@ -849,16 +866,44 @@ export class HybridWindowManager {
 
   public onWindowMinimizeRequest(event: WindowMinimizeRequestEvent) {
     stopRectAnimation(event.window, WINDOW_STATE_RECT);
-    event.window.state[WINDOW_STATE_MINIMIZED].set(event.minimized);
+    const wasMinimized = event.window.state[WINDOW_STATE_MINIMIZED]();
     const workspace = this.findWorkspaceForWindow(event.window);
+    if (wasMinimized !== event.minimized) {
+      if (!event.minimized) {
+        event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(false);
+      }
+      event.window.state[WINDOW_STATE_MINIMIZED].set(event.minimized);
+      if (event.minimized) {
+        event.window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(true);
+      }
+      markWindowCompositionDirty(event.window);
+      scheduleMinimizeAnimation(event.window, event.minimized);
+    }
     if (workspace?.isTiled) {
-      workspace.applyLayout();
+      if (!event.minimized && workspace.shouldTile(event.window)) {
+        workspace.focusWindow(event.window);
+      } else {
+        workspace.applyLayout();
+      }
       this.raiseTiledWorkspaceFloatingWindows(workspace);
     }
   }
 
   public onWindowActivateRequest(event: WindowActivateRequestEvent) {
-    event.window.state[WINDOW_STATE_MINIMIZED].set(false);
+    const wasMinimized = event.window.state[WINDOW_STATE_MINIMIZED]();
+    if (wasMinimized) {
+      this.onWindowMinimizeRequest({
+        window: event.window,
+        minimized: false,
+        source:
+          event.source === "xdg-activation" ||
+          event.source === "xwayland" ||
+          event.source === "keybind"
+            ? event.source
+            : "api",
+        timestamp: event.timestamp,
+      });
+    }
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace) {
       // 別ワークスペースのウィンドウなら、キーボード/ジェスチャと同じ
@@ -1003,15 +1048,15 @@ export class HybridWindowManager {
         this.activeWorkspaceByMonitor.get(workspace.monitor) ===
         workspace.index;
       const list = byMonitor.get(workspace.monitor) ?? [];
-      const windows: WorkspacesViewWindow[] = workspace.listWindows().map(
-        (window) => ({
+      const windows: WorkspacesViewWindow[] = workspace
+        .listWindows()
+        .map((window) => ({
           id: window.id,
           appId: window.appId(),
           title: window.title(),
           focused: window.isFocused(),
           lastFocusedAt: this.lastFocusedAt.get(window.id) ?? 0,
-        }),
-      );
+        }));
       list.push({
         index: workspace.index,
         windowCount: workspace.windowCount(),
@@ -1805,6 +1850,7 @@ export class Workspace {
       );
       window.state[WINDOW_STATE_RESTORE_RECT].set(restored.restoreRect ?? null);
       window.state[WINDOW_STATE_MINIMIZED].set(restored.minimized);
+      window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE].set(restored.minimized);
       window.state[WINDOW_STATE_MAXIMIZED].set(restored.maximized);
       if (restored.tileWidth !== undefined) {
         this.tileWidthByWindowId.set(window.id, restored.tileWidth);
@@ -3090,6 +3136,37 @@ function scheduleCloseAnimation(window: WaylandWindow): void {
       duration: OPEN_CLOSE_ANIMATION_DURATION,
       easing: WINDOW_CLOSE_EASING,
       mode: "multiply",
+    },
+  });
+}
+
+function scheduleMinimizeAnimation(
+  window: WaylandWindow,
+  minimized: boolean,
+): void {
+  window.scheduleAnimation({
+    channel: MINIMIZE_ANIMATION_CHANNEL,
+    rect: {
+      from: minimized
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : { x: 0, y: 200, width: 0, height: 0 },
+      to: minimized
+        ? { x: 0, y: 120, width: 0, height: 0 }
+        : { x: 0, y: 0, width: 0, height: 0 },
+      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      easing: minimized
+        ? WINDOW_MINIMIZE_RECT_EASING
+        : WINDOW_UNMINIMIZE_RECT_EASING,
+      mode: "add",
+    },
+    opacity: {
+      from: minimized ? 1 : 0,
+      to: minimized ? 0 : 1,
+      duration: OPEN_CLOSE_ANIMATION_DURATION,
+      easing: minimized
+        ? WINDOW_MINIMIZE_OPACITY_EASING
+        : WINDOW_UNMINIMIZE_OPACITY_EASING,
+      mode: "override",
     },
   });
 }
