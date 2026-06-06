@@ -131,15 +131,21 @@ WORKSPACE_IPC.handle("windows.activate", (params) => {
 // strip of each monitor. The bar uses this in place of a layer-shell trigger
 // surface (which would otherwise capture clicks meant for the windows below).
 // ---------------------------------------------------------------------------
-// Dock の見える高さ(~80px) + 余裕(~40px)。ポインタが dock 本体に乗っている間も
-// "inside" になるよう、本体の最上端より十分上に境界を取る。
-const DOCK_PROXIMITY_ZONE_PX = 120;
+// Two thresholds with hysteresis:
+//   - SHOW: pointer must be in the bottom 10px to trigger reveal
+//   - HIDE: once visible, pointer must leave the bottom 120px to dismiss
+// This gives a precise "reach for the dock" trigger while keeping the dock
+// stable once the user is interacting with it (so brushing the cursor a few
+// dozen pixels above the dock body does not flicker it away).
+const DOCK_SHOW_ZONE_PX = 10;
+const DOCK_HIDE_ZONE_PX = 120;
 const dockProximityByMonitor = new Map<string, boolean>();
 
-function isPointerInsideDockZone(
+function pointerInBottomStrip(
   monitor: string,
   pointerX: number,
   pointerY: number,
+  stripPx: number,
 ): boolean {
   const output = WINDOW_MANAGER.output.get(monitor);
   if (!output || !output.resolution) {
@@ -154,8 +160,26 @@ function isPointerInsideDockZone(
   return (
     pointerX >= left &&
     pointerX < right &&
-    pointerY >= bottom - DOCK_PROXIMITY_ZONE_PX &&
+    pointerY >= bottom - stripPx &&
     pointerY < bottom
+  );
+}
+
+function nextDockProximity(
+  monitor: string,
+  pointerX: number,
+  pointerY: number,
+  onTrackedMonitor: boolean,
+): boolean {
+  if (!onTrackedMonitor) return false;
+  const wasInside = dockProximityByMonitor.get(monitor) === true;
+  // While outside, only the narrow show-zone counts (10px).
+  // While inside, the wide hide-zone keeps it open (120px).
+  return pointerInBottomStrip(
+    monitor,
+    pointerX,
+    pointerY,
+    wasInside ? DOCK_HIDE_ZONE_PX : DOCK_SHOW_ZONE_PX,
   );
 }
 
@@ -338,13 +362,17 @@ WINDOW_MANAGER.event.onPointerMoveAsync((event) => {
   HYBRID_WINDOW_MANAGER.onPointerMove(event);
 
   // Dock proximity: update only the monitor the pointer is currently on,
-  // and emit "leave" for other monitors that were previously inside.
+  // and emit "leave" for other monitors that were previously inside. The
+  // narrow/wide threshold is hysteretic per current state.
   const pointerX = event.position.x;
   const pointerY = event.position.y;
   for (const monitor of WINDOW_MANAGER.output.list) {
-    const inside =
-      monitor === event.outputName &&
-      isPointerInsideDockZone(monitor, pointerX, pointerY);
+    const inside = nextDockProximity(
+      monitor,
+      pointerX,
+      pointerY,
+      monitor === event.outputName,
+    );
     updateDockProximity(monitor, inside);
   }
 });
