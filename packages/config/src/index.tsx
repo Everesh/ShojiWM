@@ -30,6 +30,7 @@ import {
   WINDOW_STATE_MINIMIZED,
   WINDOW_STATE_MINIMIZE_VISUAL_IDLE,
   WINDOW_STATE_TILE_DRAGGING,
+  WINDOW_STATE_TILED,
   WINDOW_STATE_VISIBLE_OUTPUTS,
   WINDOW_STATE_RECT,
   WINDOW_STATE_WORKSPACE_VISIBLE,
@@ -491,6 +492,9 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
   const forceRectSize = computed(
     () => window.isResizable() && !window.isTransient(),
   );
+  const tiled = computed(
+    () => window.appId() === "mpv" || window.state[WINDOW_STATE_TILED](),
+  );
   const minimizeVisualIdle = window.state[WINDOW_STATE_MINIMIZE_VISUAL_IDLE];
   const inactive = computed(
     () => minimizeVisualIdle() || (!workspaceVisible() && !tileDragging()),
@@ -599,6 +603,7 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
       visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
       opacity={workspaceOpacity}
       forceRectSize={forceRectSize}
+      tiled={tiled}
       idle={inactive}
       interactive={inactive((value) => !value)}
     >

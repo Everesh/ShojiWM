@@ -68,6 +68,9 @@ export const WINDOW_STATE_TILE_DRAGGING = createWindowState<boolean>(
     default: false,
   },
 );
+export const WINDOW_STATE_TILED = createWindowState<boolean>("tiled", {
+  default: false,
+});
 export const WINDOW_STATE_VISIBLE_OUTPUTS = createWindowState<string[] | null>(
   "visibleOutputs",
   {
@@ -3051,6 +3054,7 @@ export class Workspace {
   }
 
   private syncWindowVisibleOutputs(window: WaylandWindow) {
+    window.state[WINDOW_STATE_TILED].set(this.isTiled && this.shouldTile(window));
     window.state[WINDOW_STATE_VISIBLE_OUTPUTS].set(
       this.isTiled && !window.state[WINDOW_STATE_TILE_DRAGGING]()
         ? [this.monitor]

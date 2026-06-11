@@ -249,6 +249,7 @@ export interface ManagedWindowState {
   idle: boolean;
   interactive: boolean;
   forceRectSize: boolean;
+  tiled: boolean;
   zIndex?: number;
   transform: WindowTransform;
 }
@@ -878,6 +879,7 @@ export interface ManagedWindowProps extends ComponentProps {
   idle?: MaybeSignal<boolean>;
   interactive?: MaybeSignal<boolean>;
   forceRectSize?: MaybeSignal<boolean>;
+  tiled?: MaybeSignal<boolean>;
   zIndex?: MaybeSignal<number>;
   opacity?: MaybeSignal<number>;
   transform?: MaybeSignal<ManagedWindowTransform>;

@@ -357,6 +357,7 @@ function snapshotManagedWindow(
       idle,
       interactive: props?.interactive === undefined ? true : read(props.interactive),
       forceRectSize: props?.forceRectSize === undefined ? false : read(props.forceRectSize),
+      tiled: props?.tiled === undefined ? false : read(props.tiled),
       zIndex: props?.zIndex === undefined ? undefined : read(props.zIndex),
       transform: {
         ...transform,

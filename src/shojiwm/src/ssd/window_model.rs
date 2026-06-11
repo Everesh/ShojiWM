@@ -512,6 +512,8 @@ pub struct ManagedWindowState {
     #[serde(default)]
     pub force_rect_size: bool,
     #[serde(default)]
+    pub tiled: bool,
+    #[serde(default)]
     pub z_index: Option<i32>,
     #[serde(default)]
     pub transform: WindowTransform,
@@ -528,6 +530,7 @@ impl Default for ManagedWindowState {
             idle: false,
             interactive: true,
             force_rect_size: false,
+            tiled: false,
             z_index: None,
             transform: WindowTransform::default(),
         }

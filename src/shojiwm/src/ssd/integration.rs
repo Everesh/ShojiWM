@@ -3,6 +3,7 @@ use hashbrown::{DefaultHashBuilder, HashMap as BumpHashMap};
 use smithay::{
     backend::renderer::element::solid::SolidColorBuffer,
     desktop::Window,
+    reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Rectangle, Size},
 };
 use std::time::{Duration, Instant};
@@ -3933,6 +3934,7 @@ impl ShojiWM {
         for window in windows {
             let Some((
                 force_rect_size,
+                tiled,
                 needs_xdg_state_configure,
                 desired_root_raw,
                 desired_root,
@@ -3968,6 +3970,7 @@ impl ShojiWM {
                 let last_configured_client_size = decoration.last_configured_client_size;
                 Some((
                     managed.force_rect_size,
+                    managed.tiled,
                     self.pending_xdg_state_configure_window_ids
                         .contains(&window_id),
                     desired_root_raw,
@@ -4001,7 +4004,29 @@ impl ShojiWM {
                         })
                     });
 
-            if desired_root == current_root && !needs_xdg_state_configure {
+            let tiled_state_changed = window.toplevel().is_some_and(|toplevel| {
+                toplevel.with_pending_state(|state| {
+                    let tiled_states = [
+                        xdg_toplevel::State::TiledLeft,
+                        xdg_toplevel::State::TiledRight,
+                        xdg_toplevel::State::TiledTop,
+                        xdg_toplevel::State::TiledBottom,
+                    ];
+                    let was_tiled = tiled_states
+                        .iter()
+                        .all(|state_name| state.states.contains(*state_name));
+                    for state_name in tiled_states {
+                        if tiled {
+                            state.states.set(state_name);
+                        } else {
+                            state.states.unset(state_name);
+                        }
+                    }
+                    was_tiled != tiled
+                })
+            });
+
+            if desired_root == current_root && !needs_xdg_state_configure && !tiled_state_changed {
                 record_managed_rect_path_event(ManagedRectPathEvent::ApplyNoop);
                 if managed_rect_debug_enabled() {
                     info!(
@@ -4034,7 +4059,10 @@ impl ShojiWM {
                 )
             };
 
-            if desired_client == current_client && !needs_xdg_state_configure {
+            if desired_client == current_client
+                && !needs_xdg_state_configure
+                && !tiled_state_changed
+            {
                 record_managed_rect_path_event(ManagedRectPathEvent::ApplyNoop);
                 if managed_rect_debug_enabled() {
                     info!(
@@ -4123,7 +4151,8 @@ impl ShojiWM {
             // the client was last told. `needs_xdg_state_configure` still
             // forces one through for non-size state updates (maximize, etc.).
             let configure_size_changed = last_configured_client_size != Some(configure_client_size);
-            let should_configure = configure_size_changed || needs_xdg_state_configure;
+            let should_configure =
+                configure_size_changed || needs_xdg_state_configure || tiled_state_changed;
 
             if should_configure {
                 if let Some(toplevel) = window.toplevel() {
