@@ -586,7 +586,7 @@ export class HybridWindowManager {
       this.findWorkspaceRestoringWindow(window) ?? this.getCurrentWorkspace();
     if (workspace) {
       restoredExistingWindow = workspace.addWindow(window);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
       this.syncWorkspaceVisibility();
     } else {
       window.state[WINDOW_STATE_RECT].set(this.naturalRootRect(window));
@@ -643,7 +643,7 @@ export class HybridWindowManager {
       const workspace = this.findWorkspaceForWindow(window);
       if (workspace?.isTiled && workspace.isActive()) {
         workspace.focusWindow(window);
-        this.raiseTiledWorkspaceFloatingWindows(workspace);
+        this.applyWorkspaceStackPolicy(workspace);
       }
     }
   }
@@ -656,7 +656,7 @@ export class HybridWindowManager {
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       workspace.resizeTile(event);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
       return;
     }
 
@@ -664,14 +664,14 @@ export class HybridWindowManager {
     stopRectAnimation(event.window, WINDOW_STATE_RECT);
     event.window.state[WINDOW_STATE_RECT].set(nextRect);
     workspace?.syncFloatingWindowRect(event.window, nextRect);
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
   }
 
   public onWindowMove(event: WindowMoveEvent) {
     const workspace = this.findWorkspaceForWindow(event.window);
     if (workspace?.isTiled && workspace.shouldTile(event.window)) {
       this.onTileWindowMove(event, workspace);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
       return;
     }
 
@@ -729,7 +729,7 @@ export class HybridWindowManager {
         window.state[WINDOW_STATE_RECT].set(event.currentRect);
         workspace?.syncFloatingWindowRect(window, event.currentRect);
       }
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
       return;
     }
 
@@ -737,7 +737,7 @@ export class HybridWindowManager {
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(event.currentRect);
     workspace?.syncFloatingWindowRect(window, event.currentRect);
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
   }
 
   private onFloatingWindowMove(event: WindowMoveEvent, workspace: Workspace) {
@@ -796,7 +796,7 @@ export class HybridWindowManager {
         targetWorkspace.syncFloatingWindowRect(window, nextRect);
       }
 
-      this.raiseTiledWorkspaceFloatingWindows(targetWorkspace);
+      this.applyWorkspaceStackPolicy(targetWorkspace);
       this.updateFloatingDragSnap(event);
     }
 
@@ -807,7 +807,7 @@ export class HybridWindowManager {
         window.state[WINDOW_STATE_RECT].set(nextRect);
         drag.workspace.syncFloatingWindowRect(window, nextRect);
       }
-      this.raiseTiledWorkspaceFloatingWindows(drag.workspace);
+      this.applyWorkspaceStackPolicy(drag.workspace);
       this.floatingDrag = null;
       this.isGrabbing = false;
       if (
@@ -884,7 +884,7 @@ export class HybridWindowManager {
         window.state[WINDOW_STATE_RESTORE_RECT].set(null);
         window.state[WINDOW_STATE_MAXIMIZED].set(false);
         workspace.applyLayout();
-        this.raiseTiledWorkspaceFloatingWindows(workspace);
+        this.applyWorkspaceStackPolicy(workspace);
         return;
       }
 
@@ -892,7 +892,7 @@ export class HybridWindowManager {
       window.state[WINDOW_STATE_MAXIMIZED].set(true);
       workspace.focusWindow(window);
       workspace.applyLayout();
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
       window.focus();
       return;
     }
@@ -932,7 +932,7 @@ export class HybridWindowManager {
       WINDOW_MANAGEMENT_ANIMATION_DURATION,
     );
     window.state[WINDOW_STATE_MAXIMIZED].set(true);
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
   }
 
   public onWindowMinimizeRequest(event: WindowMinimizeRequestEvent) {
@@ -956,7 +956,7 @@ export class HybridWindowManager {
       } else {
         workspace.applyLayout();
       }
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
     }
   }
 
@@ -992,7 +992,7 @@ export class HybridWindowManager {
         return;
       }
       workspace.setTiled(!workspace.isTiled);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
     });
   }
 
@@ -1004,7 +1004,7 @@ export class HybridWindowManager {
         return;
       }
       workspace.setTiled(!workspace.isTiled);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
     });
   }
 
@@ -1015,7 +1015,7 @@ export class HybridWindowManager {
         return;
       }
       workspace.focusRelative(direction);
-      this.raiseTiledWorkspaceFloatingWindows(workspace);
+      this.applyWorkspaceStackPolicy(workspace);
     });
   }
 
@@ -1113,8 +1113,8 @@ export class HybridWindowManager {
     if (options.focusActiveAfter !== false) {
       toWorkspace.focusActiveWindow();
     }
-    this.raiseTiledWorkspaceFloatingWindows(fromWorkspace);
-    this.raiseTiledWorkspaceFloatingWindows(toWorkspace);
+    this.applyWorkspaceStackPolicy(fromWorkspace);
+    this.applyWorkspaceStackPolicy(toWorkspace);
   }
 
   public getCurrentWorkspace(): Workspace | undefined {
@@ -1274,8 +1274,19 @@ export class HybridWindowManager {
     return this.windowStack.zIndex(window);
   }
 
-  private raiseTiledWorkspaceFloatingWindows(workspace: Workspace | undefined) {
-    if (!workspace?.isTiled) {
+  private applyWorkspaceStackPolicy(workspace: Workspace | undefined) {
+    if (!workspace) {
+      return;
+    }
+
+    if (!workspace.isTiled) {
+      // Leaving tiling mode removes the "floating windows stay above tiles"
+      // policy. Restore normal focus-based stacking explicitly because
+      // focusing an already-focused window does not emit another focus event.
+      const focusedWindow = workspace.focusedWindow();
+      if (focusedWindow && this.windowStack.has(focusedWindow)) {
+        this.windowStack.raise(focusedWindow);
+      }
       return;
     }
 
@@ -1397,7 +1408,7 @@ export class HybridWindowManager {
       event.position ?? this.lastPointerPosition,
       monitor,
     );
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
   }
 
   private finishWorkspaceScrollGesture(event: GestureSwipeEvent) {
@@ -1419,7 +1430,7 @@ export class HybridWindowManager {
           event.position ?? this.lastPointerPosition,
           monitor,
         );
-        this.raiseTiledWorkspaceFloatingWindows(workspace);
+        this.applyWorkspaceStackPolicy(workspace);
       },
     );
   }
@@ -1494,8 +1505,8 @@ export class HybridWindowManager {
 
     fromWorkspace.setWorkspaceGestureVisual(rawOffsetY, fromOpacity);
     toWorkspace.setWorkspaceGestureVisual(toOffsetY, toOpacity);
-    this.raiseTiledWorkspaceFloatingWindows(fromWorkspace);
-    this.raiseTiledWorkspaceFloatingWindows(toWorkspace);
+    this.applyWorkspaceStackPolicy(fromWorkspace);
+    this.applyWorkspaceStackPolicy(toWorkspace);
 
     this.workspaceGesture = {
       monitor,
@@ -1551,8 +1562,8 @@ export class HybridWindowManager {
         visibleAfter: true,
       });
       gesture.toWorkspace.focusActiveWindow();
-      this.raiseTiledWorkspaceFloatingWindows(gesture.fromWorkspace);
-      this.raiseTiledWorkspaceFloatingWindows(gesture.toWorkspace);
+      this.applyWorkspaceStackPolicy(gesture.fromWorkspace);
+      this.applyWorkspaceStackPolicy(gesture.toWorkspace);
       return;
     }
 
@@ -1572,7 +1583,7 @@ export class HybridWindowManager {
         visibleAfter: false,
       });
     }
-    this.raiseTiledWorkspaceFloatingWindows(gesture.fromWorkspace);
+    this.applyWorkspaceStackPolicy(gesture.fromWorkspace);
   }
 
   private focusTiledWindowAtPointer(
@@ -1598,7 +1609,7 @@ export class HybridWindowManager {
     }
 
     this.currentMonitor = monitor;
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
   }
 
   private availableWorkspaceIndex(monitor: string, preferredIndex: number) {
@@ -2117,7 +2128,7 @@ export class HybridWindowManager {
       );
       workspace?.syncFloatingWindowRect(window, snap.rect);
     }
-    this.raiseTiledWorkspaceFloatingWindows(workspace);
+    this.applyWorkspaceStackPolicy(workspace);
     return true;
   }
 }
