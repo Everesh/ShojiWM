@@ -1,6 +1,7 @@
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
     collections::HashMap,
+    os::fd::AsRawFd,
     path::Path,
     sync::{
         Mutex, OnceLock,
@@ -11,7 +12,7 @@ use std::{
 
 use smithay::{
     backend::{
-        allocator::{Fourcc, gbm::GbmAllocator},
+        allocator::{Fourcc, format::FormatSet, gbm::GbmAllocator},
         drm::{
             DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
             compositor::{FrameFlags, PrimaryPlaneElement},
@@ -24,13 +25,15 @@ use smithay::{
             Texture,
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements, Element, Id, Kind, RenderElement, RenderElementStates,
-                UnderlyingStorage,
+                AsRenderElements, Element, Id, Kind, RenderElement, RenderElementPresentationState,
+                RenderElementStates, RenderingReason, UnderlyingStorage,
                 memory::MemoryRenderBuffer,
                 solid::SolidColorRenderElement,
                 surface::WaylandSurfaceRenderElement,
                 texture::TextureRenderElement,
-                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
+                utils::{
+                    Relocate, RelocateRenderElement, RescaleRenderElement, select_dmabuf_feedback,
+                },
             },
             gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture},
             utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -48,7 +51,10 @@ use smithay::{
         drm::control::{connector, crtc},
         gbm::{BufferObjectFlags, Device, Format},
         rustix::fs::OFlags,
-        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+        wayland_protocols::wp::{
+            linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags,
+            presentation_time::server::wp_presentation_feedback,
+        },
         wayland_server::Resource,
     },
     render_elements,
@@ -57,8 +63,9 @@ use smithay::{
         Transform, user_data::UserDataMap,
     },
     wayland::{
-        background_effect::BackgroundEffectSurfaceCachedState, compositor,
-        dmabuf::DmabufFeedbackBuilder,
+        background_effect::BackgroundEffectSurfaceCachedState,
+        compositor,
+        dmabuf::{DmabufFeedback, DmabufFeedbackBuilder},
     },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -108,6 +115,30 @@ fn frame_liveness_debug_enabled() -> bool {
 fn output_render_debug_enabled() -> bool {
     std::env::var_os("SHOJI_OUTPUT_RENDER_DEBUG")
         .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn direct_scanout_debug_enabled() -> bool {
+    std::env::var_os("SHOJI_DIRECT_SCANOUT_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+fn direct_scanout_debug_log_allowed(output_name: &str) -> bool {
+    static LAST_LOGGED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let Ok(mut last_logged) = LAST_LOGGED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    else {
+        return false;
+    };
+    let now = Instant::now();
+    if last_logged
+        .get(output_name)
+        .is_some_and(|last| now.duration_since(*last) < Duration::from_secs(1))
+    {
+        return false;
+    }
+    last_logged.insert(output_name.to_string(), now);
+    true
 }
 
 fn window_effect_debug_enabled() -> bool {
@@ -347,7 +378,12 @@ fn note_fullscreen_fast_path_transition(output_name: &str, active: bool) {
 /// Logs direct-scanout transitions edge-triggered: one line when a client
 /// buffer first lands on the primary plane and one line when compositing
 /// resumes, instead of spamming per frame.
-fn note_direct_scanout_transition(output_name: &str, active: bool, fullscreen_fast_path: bool) {
+fn note_direct_scanout_transition(
+    output_name: &str,
+    active: bool,
+    fullscreen_fast_path: bool,
+    fullscreen_root_buffer: Option<&str>,
+) {
     let Ok(mut guard) = direct_scanout_state_map().lock() else {
         return;
     };
@@ -359,14 +395,52 @@ fn note_direct_scanout_transition(output_name: &str, active: bool, fullscreen_fa
         tracing::info!(
             output = %output_name,
             fullscreen_fast_path,
+            fullscreen_root_buffer,
             "direct scanout engaged: client buffer assigned to primary plane (zero-copy)"
         );
     } else {
         tracing::info!(
             output = %output_name,
             fullscreen_fast_path,
+            fullscreen_root_buffer,
             "direct scanout disengaged: GL compositing resumed"
         );
+    }
+}
+
+fn describe_underlying_storage(storage: Option<UnderlyingStorage<'_>>) -> String {
+    let Some(storage) = storage else {
+        return "none".to_string();
+    };
+    match storage {
+        UnderlyingStorage::Wayland(buffer) => {
+            let wl_buffer_id = buffer.id();
+            let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) else {
+                return format!("wayland wl_buffer={wl_buffer_id:?} storage=non-dmabuf");
+            };
+            let mut hasher = DefaultHasher::new();
+            dmabuf.hash(&mut hasher);
+            let dmabuf_id = hasher.finish();
+            let size = smithay::backend::allocator::Buffer::size(dmabuf);
+            let format = smithay::backend::allocator::Buffer::format(dmabuf);
+            let handles = dmabuf
+                .handles()
+                .map(|handle| handle.as_raw_fd())
+                .collect::<Vec<_>>();
+            let offsets = dmabuf.offsets().collect::<Vec<_>>();
+            let strides = dmabuf.strides().collect::<Vec<_>>();
+            format!(
+                "wayland wl_buffer={wl_buffer_id:?} dmabuf_id={dmabuf_id:#018x} \
+                 size={size:?} fourcc={:?} modifier={:?} planes={} fds={handles:?} \
+                 offsets={offsets:?} strides={strides:?} y_inverted={} node={:?}",
+                format.code,
+                format.modifier,
+                dmabuf.num_planes(),
+                dmabuf.y_inverted(),
+                dmabuf.node(),
+            )
+        }
+        UnderlyingStorage::Memory(memory) => format!("memory {memory:?}"),
     }
 }
 
@@ -541,11 +615,17 @@ struct SurfaceData {
     /// surface, i.e. tearing. Queried once at surface creation since it is a
     /// constant device capability. Gates the fullscreen tearing fast path.
     supports_async_flip: bool,
-    /// Commit counter of the fullscreen tearing window's surface at the last
-    /// present. Used for Hyprland-style commit-driven tearing: we only async
-    /// (tear) on frames where the window committed a new buffer, so mouse-motion
-    /// redraws don't flood the present pipeline with tear flips.
-    last_present_window_commit: Option<smithay::backend::renderer::utils::CommitCounter>,
+    /// Whether this output is currently using the fullscreen tearing path. Updated on every
+    /// real render and consulted by the redraw state machine: while tearing is active a fresh
+    /// client commit must not be parked behind the estimated-vblank timer (see
+    /// `queue_tty_redraws`).
+    tearing_active: bool,
+    dmabuf_feedback: SurfaceDmabufFeedback,
+}
+
+struct SurfaceDmabufFeedback {
+    render: DmabufFeedback,
+    scanout: DmabufFeedback,
 }
 
 enum RenderSurfaceOutcome {
@@ -559,6 +639,9 @@ struct TtyRenderFrameResult {
     /// primary plane (zero-copy direct scanout) instead of GL-compositing
     /// into the swapchain.
     primary_scanout: bool,
+    primary_plane_kind: &'static str,
+    overlay_plane_count: usize,
+    cursor_plane_assigned: bool,
     states: RenderElementStates,
 }
 
@@ -919,7 +1002,39 @@ fn frame_finish(
             "mpv frame debug: frame_finish"
         );
     }
-    if redraw_needed {
+    if redraw_needed && surface.tearing_active {
+        // Async flips are commit-driven. Once the previous flip completes, submit the latest
+        // coalesced client buffer immediately instead of waiting for the event loop to finish
+        // another dispatch cycle. That extra cycle varied with client traffic and caused async
+        // flips to arrive in bursts, despite the DRM queue itself completing quickly.
+        //
+        // This is one half of the tearing present loop; the other half is in `queue_tty_redraws`,
+        // which makes sure a fresh commit arriving *after* an empty re-render here is not parked
+        // behind the estimated-vblank timer. Together they keep the present cadence tracking the
+        // client commit rate instead of the refresh rate.
+        match render_surface(state, loop_handle, node, crtc) {
+            Ok(RenderSurfaceOutcome::Processed) => {
+                let output_name = state
+                    .tty_backends
+                    .get(&node)
+                    .and_then(|backend| backend.surfaces.get(&crtc))
+                    .map(|surface| surface.output.name());
+                if let Some(output_name) = output_name {
+                    finish_processed_outputs(state, &[output_name]);
+                }
+            }
+            Ok(RenderSurfaceOutcome::Skipped) => state.schedule_redraw(),
+            Err(err) => {
+                warn!(
+                    ?node,
+                    ?crtc,
+                    error = ?err,
+                    "immediate tearing redraw failed; falling back to scheduled redraw"
+                );
+                state.schedule_redraw();
+            }
+        }
+    } else if redraw_needed {
         state.schedule_redraw();
     } else {
         schedule_commit_timing_timer(loop_handle, state, node, crtc);
@@ -1003,111 +1118,93 @@ pub fn render_if_needed(
         }
     }
 
-    if !processed_outputs.is_empty() {
-        // In multi-monitor configurations the outputs run at independent
-        // refresh rates (eg. 66 Hz built-in + 120 Hz external). schedule_redraw
-        // unconditionally queues every output, so the faster / idle output
-        // (DP-4 with no app on it) can transition Queued → Processed before
-        // the output that actually contains the source window (eDP-1, here)
-        // has had a chance to consume the damage — eDP-1 is still in
-        // WaitingForVBlank from its previous render.
-        //
-        // The old behaviour was: as soon as ANY output is Processed, every
-        // `window_source_damage` entry is wiped. That dropped Chrome's
-        // partial-rect damage on the floor before kitty's backdrop on eDP-1
-        // could see it, which manifested as the backdrop reusing the cached
-        // texture and the "no propagation on multi-monitor" symptom (per
-        // window backdrop call rate fell from ~60 Hz to ~5 Hz).
-        //
-        // Fix: keep a damage entry alive while any output that the source
-        // window is visible on is still pending to render in the very near
-        // future (Queued, or WaitingForVBlank with redraw_needed=true — both
-        // mean the next vblank will queue another render that should observe
-        // this damage). Layer-shell damage uses the same rule but keyed by
-        // every output the layer is mapped on.
-        let pending_output_names: std::collections::HashSet<String> = state
-            .tty_backends
-            .values()
-            .flat_map(|backend| backend.surfaces.values())
-            .filter(|surface| {
-                matches!(
-                    surface.redraw_state,
-                    TtyRedrawState::Queued
-                        | TtyRedrawState::WaitingForVBlank {
-                            redraw_needed: true
-                        }
-                        | TtyRedrawState::WaitingForEstimatedVBlank { queued: true, .. }
-                )
-            })
-            .map(|surface| surface.output.name())
-            .collect();
-
-        if !pending_output_names.is_empty() {
-            // Build a snapshot of which outputs each owner window appears on
-            // so the retention filter doesn't need a `&mut self` reborrow per
-            // entry.
-            let window_outputs: std::collections::HashMap<String, Vec<String>> = state
-                .space
-                .elements()
-                .filter_map(|window| {
-                    let id = state
-                        .window_decorations
-                        .get(window)
-                        .map(|decoration| decoration.snapshot.id.clone())?;
-                    let outputs = state
-                        .space
-                        .outputs_for_element(window)
-                        .into_iter()
-                        .map(|output| output.name())
-                        .collect();
-                    Some((id, outputs))
-                })
-                .collect();
-            let mut layer_outputs: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
-            for output in state.space.outputs() {
-                let output_name = output.name();
-                let map = smithay::desktop::layer_map_for_output(output);
-                for layer in map.layers() {
-                    layer_outputs
-                        .entry(layer.wl_surface().id().protocol_id().to_string())
-                        .or_default()
-                        .push(output_name.clone());
-                }
-            }
-
-            let owner_still_needed =
-                |owner: &str,
-                 visibility: &std::collections::HashMap<String, Vec<String>>|
-                 -> bool {
-                    visibility
-                        .get(owner)
-                        .map(|outputs| {
-                            outputs
-                                .iter()
-                                .any(|name| pending_output_names.contains(name))
-                        })
-                        .unwrap_or(false)
-                };
-
-            state
-                .window_source_damage
-                .retain(|entry| owner_still_needed(&entry.owner, &window_outputs));
-            state
-                .lower_layer_source_damage
-                .retain(|entry| owner_still_needed(&entry.owner, &layer_outputs));
-            state
-                .upper_layer_source_damage
-                .retain(|entry| owner_still_needed(&entry.owner, &layer_outputs));
-            state.pending_decoration_damage.clear();
-        } else {
-            state.pending_decoration_damage.clear();
-            state.clear_source_damage();
-        }
-        state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
-    }
+    finish_processed_outputs(state, &processed_outputs);
 
     Ok(())
+}
+
+fn finish_processed_outputs(state: &mut ShojiWM, processed_outputs: &[String]) {
+    if processed_outputs.is_empty() {
+        return;
+    }
+
+    // In multi-monitor configurations the outputs run at independent refresh rates.
+    // Retain source damage while any output that can consume it still has a render queued.
+    let pending_output_names: std::collections::HashSet<String> = state
+        .tty_backends
+        .values()
+        .flat_map(|backend| backend.surfaces.values())
+        .filter(|surface| {
+            matches!(
+                surface.redraw_state,
+                TtyRedrawState::Queued
+                    | TtyRedrawState::WaitingForVBlank {
+                        redraw_needed: true
+                    }
+                    | TtyRedrawState::WaitingForEstimatedVBlank { queued: true, .. }
+            )
+        })
+        .map(|surface| surface.output.name())
+        .collect();
+
+    if !pending_output_names.is_empty() {
+        let window_outputs: std::collections::HashMap<String, Vec<String>> = state
+            .space
+            .elements()
+            .filter_map(|window| {
+                let id = state
+                    .window_decorations
+                    .get(window)
+                    .map(|decoration| decoration.snapshot.id.clone())?;
+                let outputs = state
+                    .space
+                    .outputs_for_element(window)
+                    .into_iter()
+                    .map(|output| output.name())
+                    .collect();
+                Some((id, outputs))
+            })
+            .collect();
+        let mut layer_outputs: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for output in state.space.outputs() {
+            let output_name = output.name();
+            let map = smithay::desktop::layer_map_for_output(output);
+            for layer in map.layers() {
+                layer_outputs
+                    .entry(layer.wl_surface().id().protocol_id().to_string())
+                    .or_default()
+                    .push(output_name.clone());
+            }
+        }
+
+        let owner_still_needed =
+            |owner: &str, visibility: &std::collections::HashMap<String, Vec<String>>| -> bool {
+                visibility
+                    .get(owner)
+                    .map(|outputs| {
+                        outputs
+                            .iter()
+                            .any(|name| pending_output_names.contains(name))
+                    })
+                    .unwrap_or(false)
+            };
+
+        state
+            .window_source_damage
+            .retain(|entry| owner_still_needed(&entry.owner, &window_outputs));
+        state
+            .lower_layer_source_damage
+            .retain(|entry| owner_still_needed(&entry.owner, &layer_outputs));
+        state
+            .upper_layer_source_damage
+            .retain(|entry| owner_still_needed(&entry.owner, &layer_outputs));
+        state.pending_decoration_damage.clear();
+    } else {
+        state.pending_decoration_damage.clear();
+        state.clear_source_damage();
+    }
+    state.finish_damage_blink_for_outputs(processed_outputs.iter().map(String::as_str));
 }
 
 render_elements! {
@@ -1130,6 +1227,30 @@ render_elements! {
     RelocatedBackdrop=RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>,
     TransformedBackdrop=RelocateRenderElement<RescaleRenderElement<RelocateRenderElement<crate::backend::shader_effect::StableBackdropTextureElement>>>,
     Cursor=PointerRenderElement<GlesRenderer>,
+}
+
+fn tty_render_element_name(element: &TtyRenderElements) -> &'static str {
+    match element {
+        TtyRenderElements::Window(_) => "Window",
+        TtyRenderElements::TransformedWindow(_) => "TransformedWindow",
+        TtyRenderElements::Clipped(_) => "Clipped",
+        TtyRenderElements::TransformedClipped(_) => "TransformedClipped",
+        TtyRenderElements::Text(_) => "Text",
+        TtyRenderElements::RelocatedText(_) => "RelocatedText",
+        TtyRenderElements::TransformedText(_) => "TransformedText",
+        TtyRenderElements::Snapshot(_) => "Snapshot",
+        TtyRenderElements::TransformedSnapshot(_) => "TransformedSnapshot",
+        TtyRenderElements::Damage(_) => "Damage",
+        TtyRenderElements::Blink(_) => "Blink",
+        TtyRenderElements::Decoration(_) => "Decoration",
+        TtyRenderElements::RelocatedDecoration(_) => "RelocatedDecoration",
+        TtyRenderElements::TransformedDecoration(_) => "TransformedDecoration",
+        TtyRenderElements::Backdrop(_) => "Backdrop",
+        TtyRenderElements::RelocatedBackdrop(_) => "RelocatedBackdrop",
+        TtyRenderElements::TransformedBackdrop(_) => "TransformedBackdrop",
+        TtyRenderElements::Cursor(_) => "Cursor",
+        _ => "Generic",
+    }
 }
 
 pub struct OutputCaptureMirror {
@@ -1413,16 +1534,57 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
     for backend in state.tty_backends.values_mut() {
         for surface in backend.surfaces.values_mut() {
             let previous_state = surface.redraw_state;
-            match &mut surface.redraw_state {
+            let tearing_active = surface.tearing_active;
+            match surface.redraw_state {
                 TtyRedrawState::Idle => {
                     surface.redraw_state = TtyRedrawState::Queued;
                 }
                 TtyRedrawState::Queued => {}
-                TtyRedrawState::WaitingForVBlank { redraw_needed } => {
-                    *redraw_needed = true;
+                TtyRedrawState::WaitingForVBlank { .. } => {
+                    surface.redraw_state = TtyRedrawState::WaitingForVBlank { redraw_needed: true };
                 }
-                TtyRedrawState::WaitingForEstimatedVBlank { queued, .. } => {
-                    *queued = true;
+                TtyRedrawState::WaitingForEstimatedVBlank { generation, .. } => {
+                    // Tearing fast-path fix: do not let a fresh client commit get stuck behind the
+                    // previous estimated-vblank timer.
+                    //
+                    // Background: `frame_finish` re-renders immediately after each async (tearing)
+                    // flip completes. That re-render frequently runs in the sub-millisecond gap
+                    // *before* the client's next buffer commit, so it produces a no-damage frame.
+                    // The no-damage path parks the surface in `WaitingForEstimatedVBlank` and arms a
+                    // ~one-refresh-period timer (`schedule_estimated_vblank_callback`). For a normal
+                    // desktop surface that is correct throttling, but a tearing client commits fresh
+                    // buffers far above the refresh rate. With the default arm below, every such
+                    // commit only sets `queued = true` and waits for that timer to fire — so the
+                    // effective present cadence collapses to ~refresh rate and frames bunch up
+                    // unevenly (this was the root cause of the uneven view-motion / afterimage
+                    // spacing during fullscreen Direct Scanout + tearing; the present rate measured
+                    // ~2 flips clustered then a ~one-refresh gap).
+                    //
+                    // Fix: while tearing is active, promote straight to `Queued` so the very next
+                    // commit tears immediately instead of waiting a whole refresh period. The
+                    // already-armed estimated-vblank timer becomes a no-op: queuing the real frame
+                    // bumps `frame_callback_timer_generation`, and the timer's generation guard then
+                    // drops the stale callback. Keeping the timer armed still provides the
+                    // frame-callback safety net for the case where the client genuinely stops
+                    // committing (e.g. a paused game).
+                    //
+                    // Possible second-stage improvement (not yet implemented): gate the
+                    // `frame_finish` re-render on whether the fullscreen window actually has a new
+                    // buffer since the last present — e.g. compare
+                    // `with_renderer_surface_state(surface, |s| s.current_commit())` against a stored
+                    // `last_present_window_commit`. That would skip the redundant no-damage
+                    // re-render entirely (and the no-damage churn that non-buffer redraws such as
+                    // cursor motion cause), tightening the cadence further and cutting wasted GPU/CPU
+                    // work. The promotion here is enough to remove the refresh-rate cap; the gate
+                    // would mostly be an efficiency/evenness refinement.
+                    surface.redraw_state = if tearing_active {
+                        TtyRedrawState::Queued
+                    } else {
+                        TtyRedrawState::WaitingForEstimatedVBlank {
+                            queued: true,
+                            generation,
+                        }
+                    };
                 }
             }
             if animation_gap_debug_enabled() && previous_state != surface.redraw_state {
@@ -4547,6 +4709,7 @@ fn render_surface(
             .into_iter()
             .map(TtyRenderElements::Cursor)
             .collect();
+        let cursor_visible = !cursor_elements.is_empty();
 
         let use_capture_mirror = screencopy_state.has_screencopy_for_output(&output)
             || crate::backend::image_copy_capture_render::has_pending_output_capture(
@@ -4679,20 +4842,29 @@ fn render_surface(
         } else {
             CLEAR_COLOR
         };
-        // Decide tearing before rendering, because a tearing frame must use a
-        // *software* cursor. An async (tearing) page flip may only touch the
-        // primary plane — the kernel rejects a commit that also changes the
-        // cursor plane ("no prop can be changed during async flip"), which is
-        // exactly what Hyprland documents. So when we are going to tear we drop
-        // ALLOW_CURSOR_PLANE_SCANOUT: the cursor (if any) composites into the
-        // frame instead. When no cursor is visible — the common case for
-        // fullscreen games, which grab/hide the pointer — nothing composites and
-        // the bare client buffer is still promoted to the primary plane, so
-        // direct scanout (zero-copy) is preserved alongside tearing. Only when a
-        // cursor is actually on screen do we trade zero-copy for a composited
-        // (but still async-flipped, still smooth-cursor) frame.
+        // An async page flip may only touch the primary plane; changing the cursor plane in the
+        // same commit is rejected by the kernel. Match Hyprland's policy and block tearing while
+        // a cursor is visible, allowing the hardware cursor to update independently at the output
+        // refresh rate. Fullscreen games normally hide/lock the pointer, so their frames still use
+        // direct scanout with async flips.
         let tearing_forced = tearing_force_enabled();
+        let fullscreen_window_id = fullscreen_scanout
+            .as_ref()
+            .and_then(|window| window_decorations.get(window))
+            .map(|decoration| decoration.snapshot.id.clone());
+        let fullscreen_root_element_id = fullscreen_scanout.as_ref().and_then(|window| {
+            window
+                .toplevel()
+                .map(|toplevel| Id::from_wayland_resource(toplevel.wl_surface()))
+                .or_else(|| {
+                    window
+                        .x11_surface()
+                        .and_then(|surface| surface.wl_surface())
+                        .map(|surface| Id::from_wayland_resource(&surface))
+                })
+        });
         let should_tear = surface.supports_async_flip
+            && !cursor_visible
             && fullscreen_scanout.as_ref().is_some_and(|window| {
                 tearing_forced
                     || window
@@ -4700,40 +4872,38 @@ fn render_surface(
                         .map(|toplevel| toplevel.wl_surface())
                         .is_some_and(crate::protocols::tearing_control::surface_prefers_tearing)
             });
+        surface.tearing_active = should_tear;
         let frame_flags = if should_tear {
             TTY_FRAME_FLAGS.difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT)
         } else {
             TTY_FRAME_FLAGS
         };
-        // Commit-driven tearing (Hyprland-style): tear only on frames where the
-        // fullscreen window committed a new buffer. `should_tear` still drives
-        // the software-cursor frame flags so the cursor plane stays unused for
-        // the whole tearing period (avoiding the cursor-plane-reset EINVAL), but
-        // the actual async flip is gated on a fresh window commit. Otherwise a
-        // moving cursor would async-flip at the mouse polling rate (~580 Hz
-        // observed), flooding the present pipeline and starving the game's input
-        // delivery — frames without a new window commit flip synced instead,
-        // which the vblank wait naturally coalesces.
-        let window_commit = fullscreen_scanout
-            .as_ref()
-            .and_then(|window| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
-            .and_then(|wl_surface| {
-                smithay::backend::renderer::utils::with_renderer_surface_state(
-                    &wl_surface,
-                    |state| state.current_commit(),
-                )
-            });
-        let window_committed = match (window_commit, surface.last_present_window_commit) {
-            (Some(current), Some(last)) => current != last,
-            (Some(_), None) => true,
-            (None, _) => true,
-        };
-        let effective_tear = should_tear && window_committed;
+        // Keep every real damage frame asynchronous for the whole tearing period. In
+        // particular, a visible software-cursor update must not fall back to a synced flip:
+        // alternating async game frames with vblank-bound cursor frames produces visibly uneven
+        // cursor motion even when both the game and the output are otherwise running fast.
+        let mut fullscreen_root_buffer_details = None;
         let result = crate::backend::shader_effect::with_gpu_timing_renderer_span(
             &mut backend.renderer,
             "tty-render-frame",
             (output_geo.size.w, output_geo.size.h),
             |renderer| {
+                if direct_scanout_debug_enabled()
+                    && let Some(root_id) = fullscreen_root_element_id.as_ref()
+                    && let Some(element) = elements.iter().find(|element| element.id() == root_id)
+                {
+                    let src = element.src();
+                    let geometry = element.geometry(scale);
+                    let transform = element.transform();
+                    let storage =
+                        describe_underlying_storage(element.underlying_storage(renderer));
+                    fullscreen_root_buffer_details = Some(format!(
+                        "element={} id={:?} src={src:?} geometry={geometry:?} \
+                         transform={transform:?} storage=[{storage}]",
+                        tty_render_element_name(element),
+                        element.id(),
+                    ));
+                }
                 if crate::backend::shader_effect::gpu_element_timing_debug_enabled() {
                     let profiled_elements = elements
                         .iter()
@@ -4742,25 +4912,41 @@ fn render_surface(
                     surface
                         .drm_output
                         .render_frame(renderer, &profiled_elements, frame_clear_color, frame_flags)
-                        .map(|result| TtyRenderFrameResult {
-                            is_empty: result.is_empty,
-                            primary_scanout: matches!(
-                                result.primary_element,
-                                PrimaryPlaneElement::Element(_)
-                            ),
-                            states: result.states,
+                        .map(|result| {
+                            let primary_scanout =
+                                matches!(result.primary_element, PrimaryPlaneElement::Element(_));
+                            let primary_plane_kind = match &result.primary_element {
+                                PrimaryPlaneElement::Element(_) => "element",
+                                PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                            };
+                            TtyRenderFrameResult {
+                                is_empty: result.is_empty,
+                                primary_scanout,
+                                primary_plane_kind,
+                                overlay_plane_count: result.overlay_elements.len(),
+                                cursor_plane_assigned: result.cursor_element.is_some(),
+                                states: result.states,
+                            }
                         })
                 } else {
                     surface
                         .drm_output
                         .render_frame(renderer, &elements, frame_clear_color, frame_flags)
-                        .map(|result| TtyRenderFrameResult {
-                            is_empty: result.is_empty,
-                            primary_scanout: matches!(
-                                result.primary_element,
-                                PrimaryPlaneElement::Element(_)
-                            ),
-                            states: result.states,
+                        .map(|result| {
+                            let primary_scanout =
+                                matches!(result.primary_element, PrimaryPlaneElement::Element(_));
+                            let primary_plane_kind = match &result.primary_element {
+                                PrimaryPlaneElement::Element(_) => "element",
+                                PrimaryPlaneElement::Swapchain(_) => "swapchain",
+                            };
+                            TtyRenderFrameResult {
+                                is_empty: result.is_empty,
+                                primary_scanout,
+                                primary_plane_kind,
+                                overlay_plane_count: result.overlay_elements.len(),
+                                cursor_plane_assigned: result.cursor_element.is_some(),
+                                states: result.states,
+                            }
                         })
                 }
             },
@@ -4770,7 +4956,79 @@ fn render_surface(
             output.name().as_str(),
             result.primary_scanout,
             fullscreen_scanout.is_some(),
+            fullscreen_root_buffer_details.as_deref(),
         );
+        if direct_scanout_debug_enabled()
+            && fullscreen_scanout.is_some()
+            && direct_scanout_debug_log_allowed(output.name().as_str())
+        {
+            let mut zero_copy_count = 0usize;
+            let mut rendered_count = 0usize;
+            let mut skipped_count = 0usize;
+            let mut format_unsupported_count = 0usize;
+            let mut scanout_failed_count = 0usize;
+            for state in result.states.states.values() {
+                match state.presentation_state {
+                    RenderElementPresentationState::ZeroCopy => zero_copy_count += 1,
+                    RenderElementPresentationState::Skipped => skipped_count += 1,
+                    RenderElementPresentationState::Rendering { reason } => {
+                        rendered_count += 1;
+                        match reason {
+                            Some(RenderingReason::FormatUnsupported) => {
+                                format_unsupported_count += 1
+                            }
+                            Some(RenderingReason::ScanoutFailed) => scanout_failed_count += 1,
+                            None => {}
+                        }
+                    }
+                }
+            }
+            let fullscreen_root_state = fullscreen_root_element_id
+                .as_ref()
+                .and_then(|id| result.states.states.get(id))
+                .map(|state| format!("{:?}", state));
+            let element_details = elements
+                .iter()
+                .enumerate()
+                .map(|(index, element)| {
+                    let element_state = result.states.states.get(element.id());
+                    format!(
+                        "#{index}:{} id={:?} kind={:?} src={:?} geo={:?} transform={:?} \
+                         alpha={:.3} opaque={:?} state={:?}",
+                        tty_render_element_name(element),
+                        element.id(),
+                        element.kind(),
+                        element.src(),
+                        element.geometry(scale),
+                        element.transform(),
+                        element.alpha(),
+                        element.opaque_regions(scale),
+                        element_state,
+                    )
+                })
+                .collect::<Vec<_>>();
+            info!(
+                output = %output.name(),
+                fullscreen_window_id,
+                should_tear,
+                result_is_empty = result.is_empty,
+                primary_scanout = result.primary_scanout,
+                primary_plane_kind = result.primary_plane_kind,
+                overlay_plane_count = result.overlay_plane_count,
+                cursor_plane_assigned = result.cursor_plane_assigned,
+                element_count = elements.len(),
+                zero_copy_count,
+                rendered_count,
+                skipped_count,
+                format_unsupported_count,
+                scanout_failed_count,
+                fullscreen_root_element_id = ?fullscreen_root_element_id,
+                fullscreen_root_state,
+                fullscreen_root_buffer_details,
+                element_details = ?element_details,
+                "direct scanout debug: fullscreen frame result"
+            );
+        }
         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some()
             && (frame_transform_snapshot_window_count > 0 || frame_had_transform_snapshot_damage)
         {
@@ -4845,6 +5103,34 @@ fn render_surface(
             effective_render_states,
             window_decorations,
         );
+        for window in state.space.elements_for_output(&output) {
+            window.send_dmabuf_feedback(
+                &output,
+                |_, _| Some(output.clone()),
+                |wl_surface, _| {
+                    select_dmabuf_feedback(
+                        wl_surface,
+                        effective_render_states,
+                        &surface.dmabuf_feedback.render,
+                        &surface.dmabuf_feedback.scanout,
+                    )
+                },
+            );
+        }
+        for layer in layer_map_for_output(&output).layers() {
+            layer.send_dmabuf_feedback(
+                &output,
+                |_, _| Some(output.clone()),
+                |wl_surface, _| {
+                    select_dmabuf_feedback(
+                        wl_surface,
+                        effective_render_states,
+                        &surface.dmabuf_feedback.render,
+                        &surface.dmabuf_feedback.scanout,
+                    )
+                },
+            );
+        }
         if !result.is_empty {
             restore_presented_window_surface_primary_outputs(
                 &state.space,
@@ -5019,14 +5305,16 @@ fn render_surface(
             }
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, effective_render_states);
-            // `should_tear` reflects "tearing mode active" (drives the software
-            // cursor + the transition log); `effective_tear` is whether THIS
-            // frame actually tears (gated on a fresh window commit).
+            // Edge-triggered "tearing engaged/disengaged" log (kept as a normal operational
+            // log; see `note_tearing_transition`).
             note_tearing_transition(output.name().as_str(), should_tear, tearing_forced);
-            surface.last_present_window_commit = window_commit;
+            let queue_started_at = Instant::now();
+            // `should_tear` selects an immediate (async) page flip when the fullscreen
+            // direct-scanout tearing fast path is active, and a normal vblank-synced flip
+            // otherwise. See `should_tear` / the tearing fast-path block above.
             surface
                 .drm_output
-                .queue_frame_tearing(Some(output_presentation_feedback), effective_tear)?;
+                .queue_frame_tearing(Some(output_presentation_feedback), should_tear)?;
             if animation_gap_debug_enabled() {
                 info!(
                     output = %output.name(),
@@ -5041,7 +5329,7 @@ fn render_surface(
                 );
             }
             surface.frame_pending = true;
-            surface.queued_at = Some(Instant::now());
+            surface.queued_at = Some(queue_started_at);
             surface.queued_cpu_duration = total_cpu_elapsed;
             surface.skipped_while_pending_count = 0;
             surface.frame_callback_timer_armed = false;
@@ -10448,6 +10736,97 @@ fn closing_root_surface_source_elements(
     Vec::new()
 }
 
+/// True for NVIDIA block-linear DRM format modifiers that request lossless framebuffer
+/// compression.
+///
+/// Why we filter these out of the dmabuf *scanout* feedback tranche: on NVIDIA the kernel
+/// advertises these compressed modifiers as plane-capable, so a client (e.g. a game) happily
+/// allocates a compressed buffer and we hand it the "scanout" hint. But the subsequent atomic
+/// commit that would put that buffer directly on the primary plane is *rejected* by the driver,
+/// so we silently fall back to compositing it through GL. With a tearing/high-FPS client the
+/// allocator does not pick the same modifier every frame, so the buffer keeps flipping between
+/// "directly scannable" and "needs GL fallback". Direct Scanout therefore engages and disengages
+/// every few frames, which both tanks performance and — because the fast path and the fallback
+/// path have visibly different latency/cadence — makes the pointer/view feel stuttery and
+/// unresponsive. Never advertising the compressed modifiers for scanout keeps the client on a
+/// modifier we can actually flip, so Direct Scanout stays engaged steadily.
+///
+/// Compression is encoded in bits 25:23 of the modifier; the vendor is the top byte.
+fn is_nvidia_compressed_modifier(modifier: smithay::backend::allocator::Modifier) -> bool {
+    const NVIDIA_VENDOR: u64 = 0x03;
+    const BLOCK_LINEAR_2D: u64 = 0x10;
+    const COMPRESSION_MASK: u64 = 0x7 << 23;
+
+    let modifier = u64::from(modifier);
+    modifier >> 56 == NVIDIA_VENDOR
+        && modifier & BLOCK_LINEAR_2D != 0
+        && modifier & COMPRESSION_MASK != 0
+}
+
+fn surface_dmabuf_feedback(
+    drm_output: &GbmDrmOutput,
+    render_formats: FormatSet,
+    scanout_node: DrmNode,
+) -> Result<SurfaceDmabufFeedback, Box<dyn std::error::Error>> {
+    let scanout_formats = render_formats
+        .iter()
+        .filter(|format| !is_nvidia_compressed_modifier(format.modifier))
+        .copied()
+        .collect::<FormatSet>();
+    let (primary_formats, primary_or_overlay_formats) = drm_output.with_compositor(|compositor| {
+        let drm_surface = compositor.surface();
+        let primary_formats = drm_surface.plane_info().formats.clone();
+        let primary_or_overlay_formats = primary_formats
+            .iter()
+            .chain(
+                drm_surface
+                    .planes()
+                    .overlay
+                    .iter()
+                    .flat_map(|plane| plane.formats.iter()),
+            )
+            .copied()
+            .collect::<FormatSet>();
+        (primary_formats, primary_or_overlay_formats)
+    });
+
+    let primary_scanout_formats = primary_formats
+        .intersection(&scanout_formats)
+        .copied()
+        .collect::<Vec<_>>();
+    let primary_or_overlay_scanout_formats = primary_or_overlay_formats
+        .intersection(&scanout_formats)
+        .copied()
+        .collect::<Vec<_>>();
+
+    info!(
+        ?scanout_node,
+        render_feedback_format_count = render_formats.iter().count(),
+        scanout_feedback_format_count = scanout_formats.iter().count(),
+        filtered_nvidia_compressed_formats =
+            render_formats.iter().count() - scanout_formats.iter().count(),
+        primary_scanout_format_count = primary_scanout_formats.len(),
+        primary_or_overlay_scanout_format_count = primary_or_overlay_scanout_formats.len(),
+        "built tty output dmabuf scanout feedback"
+    );
+
+    let render = DmabufFeedbackBuilder::new(scanout_node.dev_id(), render_formats).build()?;
+    let scanout = DmabufFeedbackBuilder::new(scanout_node.dev_id(), scanout_formats)
+        .add_preference_tranche(
+            scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_or_overlay_scanout_formats,
+        )
+        .build()?;
+
+    Ok(SurfaceDmabufFeedback { render, scanout })
+}
+
 fn connector_connected(
     state: &mut ShojiWM,
     node: DrmNode,
@@ -10527,6 +10906,8 @@ fn connector_connected(
             &mut backend.renderer,
             &DrmOutputRenderElements::default(),
         )?;
+    let dmabuf_feedback =
+        surface_dmabuf_feedback(&drm_output, backend.renderer.dmabuf_formats(), node)?;
 
     let supports_async_flip = drm_output.supports_async_page_flip();
     info!(
@@ -10557,7 +10938,8 @@ fn connector_connected(
         last_presented_at: None,
         last_frame_callback_at: None,
         supports_async_flip,
-        last_present_window_commit: None,
+        tearing_active: false,
+        dmabuf_feedback,
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");

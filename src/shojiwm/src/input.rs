@@ -399,6 +399,13 @@ impl ShojiWM {
                         },
                     );
                     pointer.frame(self);
+                    // A locked pointer (e.g. an FPS-style game grabbing the cursor) does not move
+                    // the compositor cursor, so it intentionally does not schedule a redraw. Flush
+                    // the relative event to the client immediately instead of waiting for an
+                    // unrelated render/event-loop boundary; otherwise the client observes several
+                    // high-rate mouse samples coalesced into one low-rate batch, which reads as
+                    // choppy view movement.
+                    let _ = self.display_handle.flush_clients();
                     return;
                 }
 
@@ -435,6 +442,10 @@ impl ShojiWM {
                             },
                         );
                         pointer.frame(self);
+                        // Like a locked pointer, a rejected confined movement has no
+                        // compositor-side visual change and therefore no redraw to promptly flush
+                        // this event.
+                        let _ = self.display_handle.flush_clients();
                         return;
                     }
                 }
@@ -555,7 +566,9 @@ impl ShojiWM {
                         },
                     );
                     pointer.frame(self);
-                    self.schedule_redraw();
+                    // The locked client will commit its visual response itself. Avoid submitting
+                    // an unchanged fullscreen frame before that commit.
+                    let _ = self.display_handle.flush_clients();
                     return;
                 }
 
