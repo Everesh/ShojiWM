@@ -238,6 +238,7 @@ pub struct ShojiWM {
     pub viewporter_state: ViewporterState,
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
+    pub tearing_control_state: crate::protocols::tearing_control::TearingControlManagerState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
@@ -596,6 +597,8 @@ impl ShojiWM {
         let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let screencopy_state =
             crate::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(&dh, |_| true);
+        let tearing_control_state =
+            crate::protocols::tearing_control::TearingControlManagerState::new::<Self>(&dh);
         let foreign_toplevel_list_state =
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let image_capture_source_state =
@@ -776,6 +779,7 @@ impl ShojiWM {
             viewporter_state,
             fractional_scale_manager_state,
             screencopy_state,
+            tearing_control_state,
             foreign_toplevel_list_state,
             image_capture_source_state,
             output_capture_source_state,

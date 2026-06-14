@@ -370,6 +370,78 @@ fn note_direct_scanout_transition(output_name: &str, active: bool, fullscreen_fa
     }
 }
 
+/// When set, forces the fullscreen tearing fast path on regardless of the
+/// client's `wp_tearing_control` hint. Intended for testing tearing on clients
+/// (or XWayland proxies) that don't advertise the hint.
+fn tearing_force_enabled() -> bool {
+    std::env::var_os("SHOJI_FORCE_TEARING").is_some_and(|value| value != "0" && !value.is_empty())
+}
+
+#[allow(clippy::type_complexity)]
+fn present_rate_state_map() -> &'static Mutex<HashMap<String, (u32, Instant)>> {
+    static STATE: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Counts presents per output and logs the rate roughly once per second when
+/// `SHOJI_PRESENT_RATE_DEBUG` is set. Lets us see the actual on-screen present
+/// rate (vs. the output mode's refresh) to tell apart "compositor presents at
+/// 60 Hz" from "client renders at 60 fps".
+fn note_present_rate(output_name: &str) {
+    if !std::env::var_os("SHOJI_PRESENT_RATE_DEBUG")
+        .is_some_and(|value| value != "0" && !value.is_empty())
+    {
+        return;
+    }
+    let Ok(mut guard) = present_rate_state_map().lock() else {
+        return;
+    };
+    let now = Instant::now();
+    let entry = guard.entry(output_name.to_string()).or_insert((0, now));
+    entry.0 += 1;
+    let elapsed = now.duration_since(entry.1);
+    if elapsed >= Duration::from_secs(1) {
+        let rate = entry.0 as f64 / elapsed.as_secs_f64();
+        tracing::info!(
+            output = %output_name,
+            present_rate_hz = rate,
+            presents = entry.0,
+            window_ms = elapsed.as_secs_f64() * 1000.0,
+            "present rate"
+        );
+        entry.0 = 0;
+        entry.1 = now;
+    }
+}
+
+fn tearing_state_map() -> &'static Mutex<HashMap<String, bool>> {
+    static STATE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Logs tearing-path transitions edge-triggered: one line when a frame is first
+/// submitted as an immediate (async) page flip and one when synced flips resume.
+fn note_tearing_transition(output_name: &str, active: bool, forced: bool) {
+    let Ok(mut guard) = tearing_state_map().lock() else {
+        return;
+    };
+    if guard.insert(output_name.to_string(), active) == Some(active) {
+        return;
+    }
+    if active {
+        tracing::info!(
+            output = %output_name,
+            forced,
+            "tearing engaged: submitting immediate (async) page flips on the fullscreen surface"
+        );
+    } else {
+        tracing::info!(
+            output = %output_name,
+            "tearing disengaged: synced (vblank) page flips resumed"
+        );
+    }
+}
+
 /// Detects the window that should take the fullscreen fast path on this
 /// output: the topmost rendered window carries the client-acked xdg
 /// Fullscreen state, its committed geometry covers the whole output, and no
@@ -465,6 +537,15 @@ struct SurfaceData {
     estimated_render_duration: Duration,
     last_presented_at: Option<Duration>,
     last_frame_callback_at: Option<Duration>,
+    /// Whether the driver supports immediate (async) page flips on this
+    /// surface, i.e. tearing. Queried once at surface creation since it is a
+    /// constant device capability. Gates the fullscreen tearing fast path.
+    supports_async_flip: bool,
+    /// Commit counter of the fullscreen tearing window's surface at the last
+    /// present. Used for Hyprland-style commit-driven tearing: we only async
+    /// (tear) on frames where the window committed a new buffer, so mouse-motion
+    /// redraws don't flood the present pipeline with tear flips.
+    last_present_window_commit: Option<smithay::backend::renderer::utils::CommitCounter>,
 }
 
 enum RenderSurfaceOutcome {
@@ -699,6 +780,11 @@ fn frame_finish(
         return;
     };
     let output_name = surface.output.name();
+    // Present-rate diagnostic (SHOJI_PRESENT_RATE_DEBUG): frame_finish runs once
+    // per completed flip = once per present, so counting it gives the real
+    // present rate per output — the ground truth for "is the compositor showing
+    // 120 Hz or 60 Hz".
+    note_present_rate(output_name.as_str());
     let gap_threshold_ms = animation_gap_threshold_ms();
     if animation_gap_debug_enabled()
         && let Some(gap_ms) =
@@ -4593,6 +4679,56 @@ fn render_surface(
         } else {
             CLEAR_COLOR
         };
+        // Decide tearing before rendering, because a tearing frame must use a
+        // *software* cursor. An async (tearing) page flip may only touch the
+        // primary plane — the kernel rejects a commit that also changes the
+        // cursor plane ("no prop can be changed during async flip"), which is
+        // exactly what Hyprland documents. So when we are going to tear we drop
+        // ALLOW_CURSOR_PLANE_SCANOUT: the cursor (if any) composites into the
+        // frame instead. When no cursor is visible — the common case for
+        // fullscreen games, which grab/hide the pointer — nothing composites and
+        // the bare client buffer is still promoted to the primary plane, so
+        // direct scanout (zero-copy) is preserved alongside tearing. Only when a
+        // cursor is actually on screen do we trade zero-copy for a composited
+        // (but still async-flipped, still smooth-cursor) frame.
+        let tearing_forced = tearing_force_enabled();
+        let should_tear = surface.supports_async_flip
+            && fullscreen_scanout.as_ref().is_some_and(|window| {
+                tearing_forced
+                    || window
+                        .toplevel()
+                        .map(|toplevel| toplevel.wl_surface())
+                        .is_some_and(crate::protocols::tearing_control::surface_prefers_tearing)
+            });
+        let frame_flags = if should_tear {
+            TTY_FRAME_FLAGS.difference(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT)
+        } else {
+            TTY_FRAME_FLAGS
+        };
+        // Commit-driven tearing (Hyprland-style): tear only on frames where the
+        // fullscreen window committed a new buffer. `should_tear` still drives
+        // the software-cursor frame flags so the cursor plane stays unused for
+        // the whole tearing period (avoiding the cursor-plane-reset EINVAL), but
+        // the actual async flip is gated on a fresh window commit. Otherwise a
+        // moving cursor would async-flip at the mouse polling rate (~580 Hz
+        // observed), flooding the present pipeline and starving the game's input
+        // delivery — frames without a new window commit flip synced instead,
+        // which the vblank wait naturally coalesces.
+        let window_commit = fullscreen_scanout
+            .as_ref()
+            .and_then(|window| window.toplevel().map(|toplevel| toplevel.wl_surface().clone()))
+            .and_then(|wl_surface| {
+                smithay::backend::renderer::utils::with_renderer_surface_state(
+                    &wl_surface,
+                    |state| state.current_commit(),
+                )
+            });
+        let window_committed = match (window_commit, surface.last_present_window_commit) {
+            (Some(current), Some(last)) => current != last,
+            (Some(_), None) => true,
+            (None, _) => true,
+        };
+        let effective_tear = should_tear && window_committed;
         let result = crate::backend::shader_effect::with_gpu_timing_renderer_span(
             &mut backend.renderer,
             "tty-render-frame",
@@ -4605,12 +4741,7 @@ fn render_surface(
                         .collect::<Vec<_>>();
                     surface
                         .drm_output
-                        .render_frame(
-                            renderer,
-                            &profiled_elements,
-                            frame_clear_color,
-                            TTY_FRAME_FLAGS,
-                        )
+                        .render_frame(renderer, &profiled_elements, frame_clear_color, frame_flags)
                         .map(|result| TtyRenderFrameResult {
                             is_empty: result.is_empty,
                             primary_scanout: matches!(
@@ -4622,7 +4753,7 @@ fn render_surface(
                 } else {
                     surface
                         .drm_output
-                        .render_frame(renderer, &elements, frame_clear_color, TTY_FRAME_FLAGS)
+                        .render_frame(renderer, &elements, frame_clear_color, frame_flags)
                         .map(|result| TtyRenderFrameResult {
                             is_empty: result.is_empty,
                             primary_scanout: matches!(
@@ -4888,9 +5019,14 @@ fn render_surface(
             }
             let output_presentation_feedback =
                 take_presentation_feedback(&output, &state.space, effective_render_states);
+            // `should_tear` reflects "tearing mode active" (drives the software
+            // cursor + the transition log); `effective_tear` is whether THIS
+            // frame actually tears (gated on a fresh window commit).
+            note_tearing_transition(output.name().as_str(), should_tear, tearing_forced);
+            surface.last_present_window_commit = window_commit;
             surface
                 .drm_output
-                .queue_frame(Some(output_presentation_feedback))?;
+                .queue_frame_tearing(Some(output_presentation_feedback), effective_tear)?;
             if animation_gap_debug_enabled() {
                 info!(
                     output = %output.name(),
@@ -10392,6 +10528,14 @@ fn connector_connected(
             &DrmOutputRenderElements::default(),
         )?;
 
+    let supports_async_flip = drm_output.supports_async_page_flip();
+    info!(
+        ?node,
+        ?crtc,
+        output = %output.name(),
+        supports_async_flip,
+        "tty surface async page-flip (tearing) capability"
+    );
     let surface = SurfaceData {
         output: output.clone(),
         drm_output,
@@ -10412,6 +10556,8 @@ fn connector_connected(
         estimated_render_duration: Duration::from_millis(4),
         last_presented_at: None,
         last_frame_callback_at: None,
+        supports_async_flip,
+        last_present_window_commit: None,
     };
     backend.surfaces.insert(crtc, surface);
     debug!(?node, ?crtc, "stored tty surface");

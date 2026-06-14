@@ -11,3 +11,11 @@ members = [
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Local development override: redirect the bea4dev/smithay fork to a local
+# checkout so the tearing (async page-flip) patch can be developed in tree.
+# Revert this block once the patch is pushed to the fork and the git dep in
+# src/shojiwm/Cargo.toml is repointed at the new branch.
+[patch."https://github.com/bea4dev/smithay.git"]
+smithay = { path = "../smithay-fork" }
+smithay-drm-extras = { path = "../smithay-fork/smithay-drm-extras" }

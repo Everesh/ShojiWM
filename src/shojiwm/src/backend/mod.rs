@@ -33,7 +33,7 @@ use smithay::{
     },
     reexports::{calloop::EventLoop, input::Libinput, wayland_server::Display},
 };
-use tracing::{info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::{
     activation_environment::publish_activation_environment,
@@ -314,7 +314,15 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
             trace!("tty loop observed pending redraw");
             rendered_this_iteration = true;
         }
-        render_if_needed(&mut state, &event_loop.handle())?;
+        // A render/page-flip failure here would otherwise propagate up to
+        // `main() -> Result`, where Rust's default `Termination` prints it to
+        // stderr and exits — bypassing both the tracing log and the panic hook
+        // (it is an `Err` return, not a panic). Log it via tracing first so the
+        // failure is captured in the session log before we tear down.
+        if let Err(err) = render_if_needed(&mut state, &event_loop.handle()) {
+            error!(error = ?err, "tty render iteration failed; shutting down");
+            return Err(err);
+        }
 
         // Always flush client output buffers, even on iterations where we skipped
         // `space.refresh()` / popup cleanup. `flush_clients()` just writev()s each
