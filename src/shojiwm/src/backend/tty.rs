@@ -4863,14 +4863,30 @@ fn render_surface(
                         .map(|surface| Id::from_wayland_resource(&surface))
                 })
         });
+        // Tearing only ever happens for the fullscreen direct-scanout window with the pointer
+        // hidden (an async flip may not touch the cursor plane). Within that gate the per-window
+        // `allowTearing` config prop is the source of truth (Model B): when the config sets it we
+        // honor that value directly; when it leaves it unset we fall back to the client's
+        // `wp_tearing_control` hint. Driving the decision from config (rather than requiring the
+        // client hint) lets X11/Xwayland games — which never send `wp_tearing_control` — tear too.
+        // `SHOJI_FORCE_TEARING` still forces it on for testing.
         let should_tear = surface.supports_async_flip
             && !cursor_visible
             && fullscreen_scanout.as_ref().is_some_and(|window| {
-                tearing_forced
-                    || window
-                        .toplevel()
-                        .map(|toplevel| toplevel.wl_surface())
-                        .is_some_and(crate::protocols::tearing_control::surface_prefers_tearing)
+                if tearing_forced {
+                    return true;
+                }
+                window_decorations
+                    .get(window)
+                    .and_then(|decoration| decoration.managed_window.allow_tearing)
+                    .unwrap_or_else(|| {
+                        window
+                            .toplevel()
+                            .map(|toplevel| toplevel.wl_surface())
+                            .is_some_and(
+                                crate::protocols::tearing_control::surface_prefers_tearing,
+                            )
+                    })
             });
         surface.tearing_active = should_tear;
         let frame_flags = if should_tear {

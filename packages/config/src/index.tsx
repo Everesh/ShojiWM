@@ -677,6 +677,11 @@ WINDOW_MANAGER.window.composition = (window: WaylandWindow) => {
         tiled={tiled}
         idle={inactive}
         interactive={inactive((value) => !value)}
+        // Permit low-latency tearing for fullscreen windows. The compositor only actually tears
+        // once the window is on the direct-scanout fast path and is committing faster than the
+        // refresh rate (i.e. games), so this is a no-op for ordinary fullscreen apps. Narrow it
+        // per app if desired, e.g. `allowTearing={isGame(window.appId())}`.
+        allowTearing={true}
       >
         <ClientWindow />
       </ManagedWindow>

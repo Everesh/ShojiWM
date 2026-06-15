@@ -358,6 +358,10 @@ function snapshotManagedWindow(
       interactive: props?.interactive === undefined ? true : read(props.interactive),
       forceRectSize: props?.forceRectSize === undefined ? false : read(props.forceRectSize),
       tiled: props?.tiled === undefined ? false : read(props.tiled),
+      // Left undefined when unset so the compositor can fall back to the client's
+      // `wp_tearing_control` hint; a concrete value overrides that hint (see ManagedWindowProps).
+      allowTearing:
+        props?.allowTearing === undefined ? undefined : read(props.allowTearing),
       zIndex: props?.zIndex === undefined ? undefined : read(props.zIndex),
       transform: {
         ...transform,

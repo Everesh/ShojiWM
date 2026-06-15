@@ -561,6 +561,12 @@ pub struct ManagedWindowState {
     pub force_rect_size: bool,
     #[serde(default)]
     pub tiled: bool,
+    /// Per-window tearing permission set from the TS config (`<ManagedWindow allowTearing>`).
+    /// `None` means unspecified — the compositor falls back to the client's `wp_tearing_control`
+    /// hint. `Some(_)` overrides that hint. Consumed by the fullscreen tearing fast path in
+    /// `backend::tty` (`should_tear`).
+    #[serde(default)]
+    pub allow_tearing: Option<bool>,
     #[serde(default)]
     pub z_index: Option<i32>,
     #[serde(default)]
@@ -579,6 +585,7 @@ impl Default for ManagedWindowState {
             interactive: true,
             force_rect_size: false,
             tiled: false,
+            allow_tearing: None,
             z_index: None,
             transform: WindowTransform::default(),
         }

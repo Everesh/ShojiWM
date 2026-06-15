@@ -251,6 +251,11 @@ export interface ManagedWindowState {
   interactive: boolean;
   forceRectSize: boolean;
   tiled: boolean;
+  /**
+   * Per-window tearing permission. `undefined` means "unspecified" — the compositor falls back
+   * to the client's `wp_tearing_control` hint. A concrete value overrides that hint.
+   */
+  allowTearing?: boolean;
   zIndex?: number;
   transform: WindowTransform;
 }
@@ -992,6 +997,18 @@ export interface ManagedWindowProps extends ComponentProps {
   interactive?: MaybeSignal<boolean>;
   forceRectSize?: MaybeSignal<boolean>;
   tiled?: MaybeSignal<boolean>;
+  /**
+   * Whether this window may tear (immediate/async page flips) while it is fullscreen and on the
+   * direct-scanout fast path.
+   *
+   * This is the compositor's source of truth: when set it overrides the client's
+   * `wp_tearing_control` hint; when left undefined the compositor falls back to that hint.
+   * Tearing still only actually happens while the window is fullscreen, directly scanned out, and
+   * the pointer is hidden — so `allowTearing={() => window.isFullscreen.value}` is a typical
+   * pattern for games (works for native Wayland and X11/Xwayland clients alike, since it does not
+   * require the client to send `wp_tearing_control`).
+   */
+  allowTearing?: MaybeSignal<boolean>;
   zIndex?: MaybeSignal<number>;
   opacity?: MaybeSignal<number>;
   transform?: MaybeSignal<ManagedWindowTransform>;
