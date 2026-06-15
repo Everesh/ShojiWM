@@ -1,3 +1,4 @@
+# !tyml @cargo/Cargo
 [package]
 name = "shojiwm_ipc"
 version = "0.1.0"

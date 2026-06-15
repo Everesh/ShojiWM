@@ -1,3 +1,4 @@
+# !tyml @cargo/Cargo
 [package]
 name = "xdg-desktop-portal-shojiwm"
 version = "0.1.0"

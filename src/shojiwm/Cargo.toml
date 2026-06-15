@@ -1,3 +1,4 @@
+# !tyml @cargo/Cargo
 [package]
 name = "shoji_wm"
 version = "0.1.0"
@@ -8,12 +9,12 @@ bitflags = "2.11.0"
 thiserror = "2.0.12"
 smithay = {
     git = "https://github.com/bea4dev/smithay.git",
-    branch = "shojiwm",
+    rev = "61de4b26a251edab4d857ddfc9b818540eab709f",
     features = ["use_system_lib", "xwayland"]
 }
 smithay-drm-extras = {
     git = "https://github.com/bea4dev/smithay.git",
-    branch = "shojiwm",
+    rev = "61de4b26a251edab4d857ddfc9b818540eab709f",
     package = "smithay-drm-extras",
     default-features = false
 }
