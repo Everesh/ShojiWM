@@ -400,9 +400,15 @@ const LAYER_BLUR_MASK = compileLayerEffect({
   ],
 });
 
-WINDOW_MANAGER.effect.layer = () => ({
-  behind: LAYER_BLUR_MASK,
-});
+WINDOW_MANAGER.effect.layer = (layer) => {
+  if (layer.namespace() === "no_blur") {
+    return {};
+  }
+
+  return {
+    behind: LAYER_BLUR_MASK,
+  }
+};
 
 const POPUP_BLUR = compilePopupEffect({
   input: backdropSource(),
