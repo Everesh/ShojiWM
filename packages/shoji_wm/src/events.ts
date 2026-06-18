@@ -267,73 +267,290 @@ export interface RuntimeEventConfig {
   gestureSwipeAsync: boolean;
 }
 
-export interface WindowManagerEventController {
+/**
+ * Event bus for compositor and window lifecycle events. All `on*` methods
+ * return an unsubscribe function; call it to remove the listener.
+ * コンポジターとウィンドウのライフサイクルイベントバス。すべての `on*` メソッドは
+ * 解除関数を返します。呼び出すとリスナーが削除されます。
+ *
+ * @example Window lifecycle / ウィンドウライフサイクル
+ * ```ts
+ * const unsubOpen = COMPOSITOR.event.onOpen((window) => {
+ *   console.log("opened", window.id, window.appId);
+ * });
+ * COMPOSITOR.event.onClose((window) => unsubOpen()); // remove after first close
+ * ```
+ */
+export interface CompositorEventController {
+  /**
+   * Fires when the compositor config is enabled or reloaded.
+   * Use `event.restore` to recover state persisted by `onDisable`.
+   * 設定が有効化またはリロードされたときに発火します。
+   * `event.restore` で `onDisable` が保存した状態を復元できます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onEnable((event) => {
+   *   const saved = event.restore<MyState>("my-state");
+   *   if (saved) restore(saved);
+   * });
+   * ```
+   */
   onEnable(listener: RuntimeEnableListener): () => void;
+  /**
+   * Fires when the compositor config is disabled or about to be reloaded.
+   * Use `event.persist` to save state that survives a hot-reload.
+   * 設定が無効化またはリロード前に発火します。
+   * `event.persist` でホットリロードをまたいで状態を保存できます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onDisable((event) => {
+   *   event.persist("my-state", snapshot());
+   * });
+   * ```
+   */
   onDisable(listener: RuntimeDisableListener): () => void;
+  /**
+   * Fires when a new toplevel window is mapped (becomes visible).
+   * 新しいトップレベルウィンドウがマップされた（表示された）ときに発火します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onOpen((window) => {
+   *   hybridWM.onOpen(window);
+   * });
+   * ```
+   */
   onOpen(listener: WindowOpenListener): () => void;
+  /**
+   * Fires after the compositor sends the first xdg_toplevel configure to a new
+   * window (before the client has committed any content). Useful for setting
+   * initial geometry.
+   * コンポジターが新しいウィンドウに最初の xdg_toplevel configure を送った後に発火します
+   * （クライアントがコンテンツをコミットする前）。初期ジオメトリの設定に便利です。
+   */
   onInitialConfigure(listener: WindowInitialConfigureListener): () => void;
+  /**
+   * Fires when the client commits its first frame (window content is ready to display).
+   * クライアントが最初のフレームをコミットしたとき（ウィンドウコンテンツが表示準備完了）に発火します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onFirstCommit((window) => {
+   *   // Start open animation when the window first draws itself
+   *   window.animation.start(openVar, { from: 0, to: 1, duration: ms(180) });
+   * });
+   * ```
+   */
   onFirstCommit(listener: WindowFirstCommitListener): () => void;
+  /**
+   * Fires when a toplevel window is fully closed and unmapped.
+   * トップレベルウィンドウが完全に閉じてアンマップされたときに発火します。
+   */
   onClose(listener: WindowCloseListener): () => void;
+  /**
+   * Fires when a window gains or loses keyboard focus.
+   * `focused` is `true` when the window gains focus.
+   * ウィンドウがキーボードフォーカスを得たまたは失ったときに発火します。
+   * `focused` がフォーカスを得たときは `true` です。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onFocus((window, focused) => {
+   *   window.animation.start(focusVar, { to: focused ? 1 : 0, duration: ms(120) });
+   * });
+   * ```
+   */
   onFocus(listener: WindowFocusListener): () => void;
+  /**
+   * Fires when a window begins its close sequence (before the client tears down
+   * its surface). Use this to start close animations while the surface is still
+   * alive.
+   * ウィンドウが閉じるシーケンスを開始したとき（クライアントがサーフェスを破棄する前）に
+   * 発火します。サーフェスがまだ生きている間に閉じるアニメーションを開始するのに使います。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onStartClose((window) => {
+   *   window.animation.start(openVar, { to: 0, duration: ms(150) });
+   *   window.actions.setCloseAnimationDuration(150);
+   * });
+   * ```
+   */
   onStartClose(listener: WindowStartCloseListener): () => void;
+  /**
+   * Fires on each phase (`start`, `update`, `end`, `cancel`) of an
+   * interactive window resize initiated by the user.
+   * ユーザーが開始したインタラクティブなウィンドウリサイズの各フェーズ
+   * （`start`・`update`・`end`・`cancel`）で発火します。
+   */
   onWindowResize(listener: WindowResizeListener): () => void;
+  /**
+   * Fires on each phase of an interactive window move.
+   * インタラクティブなウィンドウ移動の各フェーズで発火します。
+   */
   onWindowMove(listener: WindowMoveListener): () => void;
+  /**
+   * Fires when a client or keybind requests a window maximize/unmaximize.
+   * クライアントまたはキーバインドがウィンドウの最大化・最大化解除を要求したときに発火します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onWindowMaximizeRequest((event) => {
+   *   hybridWM.onWindowMaximizeRequest(event);
+   * });
+   * ```
+   */
   onWindowMaximizeRequest(listener: WindowMaximizeRequestListener): () => void;
+  /**
+   * Fires when a client requests a window minimize.
+   * クライアントがウィンドウの最小化を要求したときに発火します。
+   */
   onWindowMinimizeRequest(listener: WindowMinimizeRequestListener): () => void;
+  /**
+   * Fires when a client or keybind requests fullscreen or unfullscreen.
+   * `event.outputName` is the preferred output (may be `undefined`).
+   * クライアントまたはキーバインドがフルスクリーン・フルスクリーン解除を要求したときに発火します。
+   * `event.outputName` は希望する出力（`undefined` の場合もあります）。
+   */
   onWindowFullscreenRequest(
     listener: WindowFullscreenRequestListener,
   ): () => void;
+  /**
+   * Fires when a client requests activation (focus steal) via `xdg-activation`
+   * or `xwayland`.
+   * クライアントが `xdg-activation` や `xwayland` 経由でアクティベーション（フォーカス奪取）
+   * を要求したときに発火します。
+   */
   onWindowActivateRequest(listener: WindowActivateRequestListener): () => void;
+  /**
+   * Fires when the set of connected outputs changes (hotplug, resolution change, etc.).
+   * 接続中の出力セットが変わったとき（ホットプラグ・解像度変更など）に発火します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onOutputChange((event) => {
+   *   hybridWM.onOutputChange(event);
+   * });
+   * ```
+   */
   onOutputChange(listener: OutputChangeListener): () => void;
+  /**
+   * Fires when the set of connected input devices changes (hotplug).
+   * 接続中の入力デバイスセットが変わったとき（ホットプラグ）に発火します。
+   */
   onInputDeviceChange(listener: InputDeviceChangeListener): () => void;
+  /**
+   * Fires asynchronously on every pointer move event.
+   * The listener may return a `Promise`; the compositor awaits it before
+   * continuing. Return `false` (or resolve with `false`) to suppress further
+   * handling.
+   * ポインター移動イベントのたびに非同期で発火します。リスナーは `Promise` を返せます。
+   * `false`（または `Promise<false>`）を返すとそれ以降の処理を抑制します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onPointerMoveAsync((event) => {
+   *   hybridWM.onPointerMove(event);
+   * });
+   * ```
+   */
   onPointerMoveAsync(listener: PointerMoveAsyncListener): () => void;
+  /**
+   * Fires asynchronously on each phase of a multi-finger touchpad swipe gesture.
+   * マルチフィンガータッチパッドスワイプジェスチャーの各フェーズで非同期に発火します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onGestureSwipeAsync((event) => {
+   *   hybridWM.onGestureSwipe(event);
+   * });
+   * ```
+   */
   onGestureSwipeAsync(listener: GestureSwipeAsyncListener): () => void;
+  /**
+   * Fires when a new layer-shell surface is created.
+   * 新しいレイヤーシェルサーフェスが作成されたときに発火します。
+   */
   onCreateLayer(listener: LayerCreateListener): () => void;
+  /**
+   * Fires when a layer-shell surface's committed state changes (anchor, exclusive
+   * zone, size, …).
+   * レイヤーシェルサーフェスのコミット済み状態が変わったときに発火します。
+   */
   onUpdateLayer(listener: LayerUpdateListener): () => void;
+  /**
+   * Fires when a layer-shell surface is destroyed.
+   * レイヤーシェルサーフェスが破棄されたときに発火します。
+   */
   onDestroyLayer(listener: LayerDestroyListener): () => void;
+
+  /** @internal Called by the compositor runtime, not config code. */
   emitOpen(window: WaylandWindow): void;
+  /** @internal */
   emitInitialConfigure(window: WaylandWindow): void;
+  /** @internal */
   emitFirstCommit(window: WaylandWindow): void;
+  /** @internal */
   emitClose(window: WaylandWindow): void;
+  /** @internal */
   emitFocus(window: WaylandWindow, focused: boolean): void;
+  /** @internal */
   emitStartClose(window: WaylandWindow): void;
+  /** @internal */
   emitWindowResize(
     window: WaylandWindow,
     event: RuntimeWindowResizeEvent,
   ): boolean;
+  /** @internal */
   emitWindowMove(window: WaylandWindow, event: RuntimeWindowMoveEvent): boolean;
+  /** @internal */
   emitWindowMaximizeRequest(
     window: WaylandWindow,
     event: RuntimeWindowMaximizeRequestEvent,
   ): boolean;
+  /** @internal */
   emitWindowMinimizeRequest(
     window: WaylandWindow,
     event: RuntimeWindowMinimizeRequestEvent,
   ): boolean;
+  /** @internal */
   emitWindowFullscreenRequest(
     window: WaylandWindow,
     event: RuntimeWindowFullscreenRequestEvent,
   ): boolean;
+  /** @internal */
   emitWindowActivateRequest(
     window: WaylandWindow,
     event: RuntimeWindowActivateRequestEvent,
   ): boolean;
+  /** @internal */
   emitOutputChange(event: OutputChangeEvent): void;
+  /** @internal */
   emitInputDeviceChange(event: InputDeviceChangeEvent): void;
+  /** @internal */
   emitPointerMoveAsync(event: PointerMoveEvent): Promise<boolean>;
+  /** @internal */
   emitGestureSwipeAsync(event: GestureSwipeEvent): Promise<boolean>;
+  /** @internal */
   emitCreateLayer(layer: WaylandLayer): void;
+  /** @internal */
   emitUpdateLayer(layer: WaylandLayer): void;
+  /** @internal */
   emitDestroyLayer(layer: WaylandLayer): void;
+  /** @internal */
   emitEnable(
     reason: RuntimeEnableEvent["reason"],
     state?: RuntimePersistedState,
   ): void;
+  /** @internal */
   emitDisable(reason: RuntimeDisableEvent["reason"]): RuntimePersistedState;
+  /** @internal */
   takePendingEventConfig(): RuntimeEventConfig | undefined;
 }
 
-export function createWindowManagerEventController(): WindowManagerEventController {
+export function createCompositorEventController(): CompositorEventController {
   const enableListeners = new Set<RuntimeEnableListener>();
   const disableListeners = new Set<RuntimeDisableListener>();
   const openListeners = new Set<WindowOpenListener>();

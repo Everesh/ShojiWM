@@ -7,7 +7,7 @@ import {
   markWindowDirty,
   read,
   seconds,
-  WINDOW_MANAGER,
+  COMPOSITOR,
   type EasingFunction,
   type GestureSwipeEvent,
   type OutputChangeEvent,
@@ -1197,7 +1197,7 @@ export class HybridWindowManager {
   }
 
   public switchWorkspace(direction: -1 | 1) {
-    const monitor = this.currentMonitor || WINDOW_MANAGER.output.list.at(0);
+    const monitor = this.currentMonitor || COMPOSITOR.output.list.at(0);
     if (!monitor) {
       return;
     }
@@ -1278,7 +1278,7 @@ export class HybridWindowManager {
   /** Name (connector) of the monitor under the cursor; updated on pointer move. */
   public getCurrentMonitorName(): string {
     this.syncWorkspaces();
-    return this.currentMonitor || WINDOW_MANAGER.output.list.at(0) || "";
+    return this.currentMonitor || COMPOSITOR.output.list.at(0) || "";
   }
 
   /**
@@ -1312,7 +1312,7 @@ export class HybridWindowManager {
       byMonitor.set(workspace.monitor, list);
     }
 
-    const monitors: WorkspacesViewMonitor[] = WINDOW_MANAGER.output.list.map(
+    const monitors: WorkspacesViewMonitor[] = COMPOSITOR.output.list.map(
       (name) => {
         const active = this.activeWorkspaceByMonitor.get(name) ?? 1;
         // Only surface workspaces that have windows, plus the active one
@@ -1466,7 +1466,7 @@ export class HybridWindowManager {
   }
 
   private syncWorkspaces() {
-    for (const monitor of WINDOW_MANAGER.output.list) {
+    for (const monitor of COMPOSITOR.output.list) {
       if (!this.activeWorkspaceByMonitor.has(monitor)) {
         this.activeWorkspaceByMonitor.set(monitor, 1);
       }
@@ -1478,9 +1478,9 @@ export class HybridWindowManager {
 
     if (
       !this.currentMonitor ||
-      !WINDOW_MANAGER.output.list.includes(this.currentMonitor)
+      !COMPOSITOR.output.list.includes(this.currentMonitor)
     ) {
-      this.currentMonitor = WINDOW_MANAGER.output.list.at(0) ?? "";
+      this.currentMonitor = COMPOSITOR.output.list.at(0) ?? "";
     }
   }
 
@@ -1516,10 +1516,10 @@ export class HybridWindowManager {
 
   private gestureMonitor(event: GestureSwipeEvent): string {
     const outputName = event.outputName;
-    if (outputName && WINDOW_MANAGER.output.list.includes(outputName)) {
+    if (outputName && COMPOSITOR.output.list.includes(outputName)) {
       return outputName;
     }
-    return this.currentMonitor || WINDOW_MANAGER.output.list.at(0) || "";
+    return this.currentMonitor || COMPOSITOR.output.list.at(0) || "";
   }
 
   private resolveWorkspaceGestureMode(
@@ -1774,7 +1774,7 @@ export class HybridWindowManager {
     }
 
     this.currentMonitor =
-      monitorHint && WINDOW_MANAGER.output.list.includes(monitorHint)
+      monitorHint && COMPOSITOR.output.list.includes(monitorHint)
         ? monitorHint
         : workspace.monitor;
   }
@@ -1788,7 +1788,7 @@ export class HybridWindowManager {
     }
 
     const monitor =
-      monitorHint && WINDOW_MANAGER.output.list.includes(monitorHint)
+      monitorHint && COMPOSITOR.output.list.includes(monitorHint)
         ? monitorHint
         : (this.outputNameAt(position.x, position.y) ?? this.currentMonitor);
     const workspace = this.workspaceForMonitor(monitor);
@@ -1861,7 +1861,7 @@ export class HybridWindowManager {
     drag: NonNullable<HybridWindowManager["tileDrag"]>,
   ): Workspace {
     const monitor =
-      event.outputName && WINDOW_MANAGER.output.list.includes(event.outputName)
+      event.outputName && COMPOSITOR.output.list.includes(event.outputName)
         ? event.outputName
         : drag.workspace.monitor;
     let index = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
@@ -1892,7 +1892,7 @@ export class HybridWindowManager {
     drag: NonNullable<HybridWindowManager["floatingDrag"]>,
   ): Workspace {
     const monitor =
-      event.outputName && WINDOW_MANAGER.output.list.includes(event.outputName)
+      event.outputName && COMPOSITOR.output.list.includes(event.outputName)
         ? event.outputName
         : drag.workspace.monitor;
     let index = this.activeWorkspaceByMonitor.get(monitor) ?? 1;
@@ -1939,12 +1939,12 @@ export class HybridWindowManager {
   }
 
   private workspaceViewportRect(monitor: string): ManagedWindowRect {
-    const usable = WINDOW_MANAGER.layer.usableArea(monitor);
+    const usable = COMPOSITOR.layer.usableArea(monitor);
     if (usable) {
       return usable;
     }
 
-    const output = WINDOW_MANAGER.output.current[monitor];
+    const output = COMPOSITOR.output.current[monitor];
     if (output?.resolution) {
       return {
         x: output.position.x,
@@ -2019,10 +2019,10 @@ export class HybridWindowManager {
     const outputName =
       this.outputNameAt(centerX, centerY) ?? this.currentMonitor;
     const output = outputName
-      ? WINDOW_MANAGER.output.current[outputName]
+      ? COMPOSITOR.output.current[outputName]
       : undefined;
     const usable = outputName
-      ? WINDOW_MANAGER.layer.usableArea(outputName)
+      ? COMPOSITOR.layer.usableArea(outputName)
       : undefined;
 
     if (usable) {
@@ -2066,7 +2066,7 @@ export class HybridWindowManager {
       this.outputNameAt(centerX, centerY) ??
       this.currentMonitor;
     const output = outputName
-      ? WINDOW_MANAGER.output.current[outputName]
+      ? COMPOSITOR.output.current[outputName]
       : undefined;
     if (output?.resolution) {
       return {
@@ -2174,8 +2174,8 @@ export class HybridWindowManager {
   }
 
   private outputNameAt(x: number, y: number): string | undefined {
-    for (const name of WINDOW_MANAGER.output.list) {
-      const output = WINDOW_MANAGER.output.current[name];
+    for (const name of COMPOSITOR.output.list) {
+      const output = COMPOSITOR.output.current[name];
       if (!output?.resolution) {
         continue;
       }
@@ -2205,7 +2205,7 @@ export class HybridWindowManager {
 
   /** Full logical rect of a monitor (ignores reserved insets). */
   private monitorFullRect(monitor: string): ManagedWindowRect | null {
-    const output = WINDOW_MANAGER.output.current[monitor];
+    const output = COMPOSITOR.output.current[monitor];
     if (!output?.resolution) {
       return null;
     }
@@ -2220,7 +2220,7 @@ export class HybridWindowManager {
   /** Usable area inset by the maximized padding — the base for all snap rects. */
   private monitorSnapBaseRect(monitor: string): ManagedWindowRect | null {
     const usable =
-      WINDOW_MANAGER.layer.usableArea(monitor) ??
+      COMPOSITOR.layer.usableArea(monitor) ??
       this.monitorFullRect(monitor);
     if (!usable) {
       return null;
@@ -2623,7 +2623,7 @@ export class HybridWindowManager {
       this.snapPreviewBroadcaster({ monitor, rect: null, kind });
       return;
     }
-    const output = WINDOW_MANAGER.output.current[monitor];
+    const output = COMPOSITOR.output.current[monitor];
     const ox = output?.position.x ?? 0;
     const oy = output?.position.y ?? 0;
     this.snapPreviewBroadcaster({
@@ -2650,7 +2650,7 @@ export class HybridWindowManager {
 
     const monitor =
       event.outputName &&
-      WINDOW_MANAGER.output.list.includes(event.outputName)
+      COMPOSITOR.output.list.includes(event.outputName)
         ? event.outputName
         : this.currentMonitor;
     const zone = monitor
@@ -2854,7 +2854,7 @@ export class Workspace {
     window.state[WINDOW_STATE_WORKSPACE_OPACITY].set(visible ? 1 : 0);
     this.syncWindowVisibleOutputs(window);
 
-    if (!WINDOW_MANAGER.output.list.includes(this.monitor)) {
+    if (!COMPOSITOR.output.list.includes(this.monitor)) {
       return restored !== undefined;
     }
 
@@ -3025,7 +3025,7 @@ export class Workspace {
   }
 
   public refreshUsableAreaLayout() {
-    if (!WINDOW_MANAGER.output.list.includes(this.monitor)) {
+    if (!COMPOSITOR.output.list.includes(this.monitor)) {
       return;
     }
 
@@ -3658,7 +3658,7 @@ export class Workspace {
 
   private kineticScrollIntervalMs(): number {
     const refreshRate =
-      WINDOW_MANAGER.output.current[this.monitor]?.resolution?.refreshRate ??
+      COMPOSITOR.output.current[this.monitor]?.resolution?.refreshRate ??
       WORKSPACE_KINETIC_SCROLL_FALLBACK_REFRESH_RATE;
     return 1000 / Math.max(1, refreshRate);
   }
@@ -3897,12 +3897,12 @@ export class Workspace {
 
   private centeredFloatingRect(window: WaylandWindow): ManagedWindowRect {
     const sizeRect = this.naturalRootRect(window);
-    const monitor = WINDOW_MANAGER.output.current[this.monitor];
+    const monitor = COMPOSITOR.output.current[this.monitor];
     if (!monitor?.resolution) {
       return sizeRect;
     }
 
-    const usableRect = WINDOW_MANAGER.layer.usableArea(this.monitor);
+    const usableRect = COMPOSITOR.layer.usableArea(this.monitor);
     const logicalWidth =
       usableRect?.width ?? monitor.resolution.width / monitor.scale;
     const logicalHeight =
@@ -4134,8 +4134,8 @@ export class Workspace {
   }
 
   private tileViewportRect(): ManagedWindowRect {
-    const monitor = WINDOW_MANAGER.output.current[this.monitor];
-    const usableRect = WINDOW_MANAGER.layer.usableArea(this.monitor);
+    const monitor = COMPOSITOR.output.current[this.monitor];
+    const usableRect = COMPOSITOR.layer.usableArea(this.monitor);
     const base =
       usableRect ??
       (monitor?.resolution
@@ -4283,7 +4283,7 @@ function withManagedWindowOnlySSDRebuildSuppressed<T>(
   callback: () => T,
   options: { strict?: boolean } = {},
 ): T {
-  return WINDOW_MANAGER.runtime.withSSDRebuildSuppressed(
+  return COMPOSITOR.runtime.withSSDRebuildSuppressed(
     options.strict
       ? STRICT_MANAGED_WINDOW_ONLY_REBUILD_SUPPRESSION
       : MANAGED_WINDOW_ONLY_REBUILD_SUPPRESSION,

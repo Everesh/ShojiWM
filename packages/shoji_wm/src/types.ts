@@ -84,52 +84,162 @@ export interface WaylandLayerSnapshot {
   readonly desiredSize: WaylandLayerDesiredSize;
 }
 
+/**
+ * A plain value or a `ReadonlySignal<T>`. Composition functions accept both so
+ * callers can pass either a static constant or a reactive signal.
+ * 固定値または `ReadonlySignal<T>` のいずれかです。合成関数は両方を受け付けるので、
+ * 静的な定数またはリアクティブなシグナルのどちらでも渡せます。
+ */
 export type MaybeSignal<T> = T | import("./signals").ReadonlySignal<T>;
 
+/**
+ * A mapped (visible) Wayland toplevel window. Reactive properties are
+ * `ReadonlySignal<T>` — the compositor re-evaluates any composition code that
+ * reads them whenever they change.
+ * マップされた（表示中の）Wayland トップレベルウィンドウ。リアクティブなプロパティは
+ * `ReadonlySignal<T>` です。読み取った合成コードは変更時にコンポジターが自動的に
+ * 再評価します。
+ *
+ * @example Read reactive state / リアクティブな状態を読む
+ * ```ts
+ * COMPOSITOR.window.composition = (window) => {
+ *   const focused = window.isFocused.value;
+ *   const title = window.title.value;
+ *   // ...
+ * };
+ * ```
+ */
 export interface WaylandWindow {
+  /** Stable string identifier unique to this window for its lifetime. / ウィンドウのライフタイムを通じてユニークな安定した識別子。 */
   readonly id: string;
+  /** Reactive window title as set by the client. / クライアントが設定するリアクティブなウィンドウタイトル。 */
   readonly title: import("./signals").ReadonlySignal<string>;
+  /** Reactive app-id (e.g. `"org.gnome.Nautilus"`). `undefined` if the client did not set one. / リアクティブな app-id。クライアントが設定していない場合は `undefined`。 */
   readonly appId: import("./signals").ReadonlySignal<string | undefined>;
+  /** Current logical position and size in global compositor coordinates. / グローバル座標でのウィンドウの現在の論理的な位置とサイズ。 */
   readonly position: WindowPosition;
+  /** Alias for `position`. / `position` の別名。 */
   readonly rect: WindowPosition;
+  /**
+   * Per-window key/value state store. Keys are created with `createWindowState`;
+   * reading a key returns a `Signal<T>` scoped to this window.
+   * `createWindowState` で作成したキーで読み取ると、このウィンドウにスコープされた
+   * `Signal<T>` を返すウィンドウごとの状態ストア。
+   *
+   * @example
+   * ```ts
+   * const isMinimized = createWindowState("minimized", { default: false });
+   * // inside composition:
+   * window.state[isMinimized].value; // Signal<boolean>
+   * ```
+   */
   readonly state: import("./window-state").WindowStateStore;
+  /**
+   * GPU transform applied to this window during composition. Write signals or
+   * values to drive reactive transforms (scale, translate, opacity, origin).
+   * 合成時にこのウィンドウに適用される GPU トランスフォーム。シグナルまたは値を
+   * 書き込んでリアクティブなトランスフォーム（スケール・移動・不透明度・原点）を制御します。
+   */
   readonly transform: WindowTransform;
+  /**
+   * Animation controller for this window. Start/stop/set named animation
+   * variables and read their progress as signals.
+   * このウィンドウ用のアニメーションコントローラー。名前付きアニメーション変数の
+   * 開始・停止・設定とシグナルとしての進捗読み取りを行います。
+   */
   readonly animation: import("./animation").AnimationController;
+  /** `true` while this window holds keyboard focus. / キーボードフォーカスを持っている間 `true`。 */
   readonly isFocused: import("./signals").ReadonlySignal<boolean>;
+  /** `true` when the window is in floating (non-tiled) mode. / ウィンドウがフローティング（非タイル）モードのとき `true`。 */
   readonly isFloating: import("./signals").ReadonlySignal<boolean>;
+  /** `true` when the window is maximized. / ウィンドウが最大化されているとき `true`。 */
   readonly isMaximized: import("./signals").ReadonlySignal<boolean>;
+  /** `true` when the window is fullscreen. / ウィンドウがフルスクリーンのとき `true`。 */
   readonly isFullscreen: import("./signals").ReadonlySignal<boolean>;
+  /** Min/max size constraints as reported by the client. / クライアントが報告する最小・最大サイズ制約。 */
   readonly sizeConstraints: import("./signals").ReadonlySignal<WindowSizeConstraints>;
+  /** `false` when the client has disabled interactive resize. / クライアントがインタラクティブリサイズを無効にしているとき `false`。 */
   readonly isResizable: import("./signals").ReadonlySignal<boolean>;
+  /** `true` for child windows (dialogs, etc.) that are transient for another toplevel. / 別のトップレベルに対してトランジェントな子ウィンドウ（ダイアログ等）のとき `true`。 */
   readonly isTransient: import("./signals").ReadonlySignal<boolean>;
+  /** `id` of the parent window if this is a transient, otherwise `undefined`. / トランジェントの場合は親ウィンドウの `id`、そうでない場合は `undefined`。 */
   readonly parentId: import("./signals").ReadonlySignal<string | undefined>;
+  /** Window icon provided by the client or resolved from the desktop entry. / クライアントまたはデスクトップエントリから提供されるウィンドウアイコン。 */
   readonly icon: import("./signals").ReadonlySignal<WindowIcon | undefined>;
+  /** Current pointer/drag interaction state for use in composition code. / 合成コードで使用するポインター・ドラッグの現在のインタラクション状態。 */
   readonly interaction: import("./signals").ReadonlySignal<WindowCompositionInteractionSnapshot>;
+  /** Ask the client to close the window. / クライアントにウィンドウを閉じるよう要求します。 */
   close(): void;
+  /** Ask the client to maximize. / クライアントに最大化を要求します。 */
   maximize(): void;
+  /** Ask the client to unmaximize. / クライアントに最大化解除を要求します。 */
   unmaximize(): void;
+  /** Ask the client to minimize. / クライアントに最小化を要求します。 */
   minimize(): void;
+  /** Ask the client to enter fullscreen. / クライアントにフルスクリーン移行を要求します。 */
   fullscreen(): void;
+  /** Ask the client to leave fullscreen. / クライアントにフルスクリーン解除を要求します。 */
   unfullscreen(): void;
+  /**
+   * Give keyboard focus to this window. Raises the window and notifies
+   * `COMPOSITOR.event.onFocus` listeners.
+   * このウィンドウにキーボードフォーカスを与えます。ウィンドウを前面に出し、
+   * `COMPOSITOR.event.onFocus` リスナーに通知します。
+   */
   focus(): void;
+  /** Schedule a managed-window animation (position, size, etc.) via the SSD pipeline. / SSD パイプライン経由でマネージドウィンドウのアニメーション（位置・サイズ等）をスケジュールします。 */
   scheduleAnimation(options: ManagedWindowScheduleAnimationOptions): void;
+  /** Cancel a running animation on this window. Pass a channel name to cancel only that channel. / 実行中のアニメーションをキャンセルします。チャンネル名を渡すとそのチャンネルのみキャンセルします。 */
   cancelAnimation(channel?: string): void;
+  /**
+   * Set how long the compositor waits before destroying the window surface after
+   * the close sequence begins. Use this to match the close animation duration.
+   * 閉じるシーケンス開始後、コンポジターがウィンドウサーフェスを破棄するまでの
+   * 待機時間を設定します。閉じるアニメーションの長さに合わせるために使います。
+   */
   setCloseAnimationDuration(durationMs: number): void;
+  /** `true` if this window is running under XWayland (X11 compatibility layer). / XWayland（X11 互換レイヤー）上で動作するウィンドウのとき `true`。 */
   isXWayland(): boolean;
 }
 
+/**
+ * A mapped layer-shell surface (bars, docks, overlays, wallpapers, etc.).
+ * Reactive properties are `ReadonlySignal<T>` and automatically invalidate any
+ * composition code that reads them.
+ * マップされたレイヤーシェルサーフェス（バー・ドック・オーバーレイ・壁紙等）。
+ * リアクティブなプロパティは `ReadonlySignal<T>` で、読み取った合成コードを
+ * 自動的に無効化します。
+ *
+ * @example In an effect factory / エフェクトファクトリー内で
+ * ```ts
+ * COMPOSITOR.effect.layer = (layer) =>
+ *   layer.namespace.value === "bar" ? { shader: panelBlur } : null;
+ * ```
+ */
 export interface WaylandLayer {
+  /** Stable string identifier unique to this layer for its lifetime. / レイヤーのライフタイムを通じてユニークな安定した識別子。 */
   readonly id: string;
+  /** Reactive namespace string set by the client (e.g. `"bar"`, `"dock"`). / クライアントが設定するリアクティブな名前空間文字列（例: `"bar"`、`"dock"`）。 */
   readonly namespace: import("./signals").ReadonlySignal<string | undefined>;
+  /** Reactive z-layer kind: `"background" | "bottom" | "top" | "overlay"`. / リアクティブな z レイヤー種別。 */
   readonly layer: import("./signals").ReadonlySignal<WaylandLayerKind>;
+  /** Reactive name of the output this surface is placed on. / このサーフェスが配置される出力名（リアクティブ）。 */
   readonly outputName: import("./signals").ReadonlySignal<string>;
+  /** Current logical position and size in global compositor coordinates. / グローバル座標での現在の論理的な位置とサイズ。 */
   readonly position: LayerPosition;
+  /** Reactive anchor edges. / リアクティブなアンカーエッジ。 */
   readonly anchor: import("./signals").ReadonlySignal<WaylandLayerAnchor>;
+  /** Reactive exclusive-zone request. / リアクティブな排他ゾーン要求。 */
   readonly exclusiveZone: import("./signals").ReadonlySignal<WaylandLayerExclusiveZone>;
+  /** Reactive explicit exclusive edge (layer-shell v5+). `null` when not set. / リアクティブな明示的排他エッジ（レイヤーシェル v5+）。未設定時は `null`。 */
   readonly exclusiveEdge: import("./signals").ReadonlySignal<WaylandLayerEdge | null>;
+  /** Reactive margin insets in logical pixels. / 論理ピクセル単位のリアクティブなマージンインセット。 */
   readonly margin: import("./signals").ReadonlySignal<WaylandLayerMargin>;
+  /** Reactive keyboard interactivity mode. / リアクティブなキーボードインタラクティビティモード。 */
   readonly keyboardInteractivity: import("./signals").ReadonlySignal<WaylandLayerKeyboardInteractivity>;
+  /** Reactive size the client requested. / クライアントが要求したリアクティブなサイズ。 */
   readonly desiredSize: import("./signals").ReadonlySignal<WaylandLayerDesiredSize>;
+  /** Animation controller for this layer surface. / このレイヤーサーフェス用のアニメーションコントローラー。 */
   readonly animation: import("./animation").AnimationController;
 }
 
@@ -157,12 +267,38 @@ export interface LayerPosition {
   height: number;
 }
 
+/**
+ * GPU transform applied to a window during composition. Each field accepts a
+ * plain value or a `ReadonlySignal<number>` for reactive animation.
+ * 合成時にウィンドウに適用される GPU トランスフォーム。各フィールドは固定値または
+ * `ReadonlySignal<number>` によるリアクティブなアニメーションを受け付けます。
+ *
+ * @example Animate scale + opacity on open / オープン時にスケールと不透明度をアニメーション
+ * ```ts
+ * COMPOSITOR.event.onOpen((window) => {
+ *   window.animation.start(openVar, { from: 0, to: 1, duration: ms(180) });
+ * });
+ * COMPOSITOR.window.composition = (window) => {
+ *   const t = window.animation.variable(openVar);
+ *   window.transform.scaleX = t((x) => 0.85 + x * 0.15);
+ *   window.transform.scaleY = t((x) => 0.85 + x * 0.15);
+ *   window.transform.opacity = t;
+ *   // ...
+ * };
+ * ```
+ */
 export interface WindowTransform {
+  /** Transform origin for scale operations. Defaults to the window center. / スケール操作のトランスフォーム原点。デフォルトはウィンドウ中央。 */
   origin: MaybeSignal<TransformOrigin>;
+  /** Horizontal translation in logical pixels. / 論理ピクセル単位の水平移動量。 */
   translateX: MaybeSignal<number>;
+  /** Vertical translation in logical pixels. / 論理ピクセル単位の垂直移動量。 */
   translateY: MaybeSignal<number>;
+  /** Horizontal scale factor (`1.0` = no scale). / 水平スケール係数（`1.0` = スケールなし）。 */
   scaleX: MaybeSignal<number>;
+  /** Vertical scale factor (`1.0` = no scale). / 垂直スケール係数（`1.0` = スケールなし）。 */
   scaleY: MaybeSignal<number>;
+  /** Opacity from `0.0` (transparent) to `1.0` (opaque). / 不透明度（`0.0` = 透明、`1.0` = 不透明）。 */
   opacity: MaybeSignal<number>;
 }
 
@@ -560,7 +696,7 @@ export interface PopupEffectAssignment {
 }
 
 /**
- * A mapped xdg_popup, delivered to `WINDOW_MANAGER.effect.popup` so effects
+ * A mapped xdg_popup, delivered to `COMPOSITOR.effect.popup` so effects
  * can be assigned per popup. Covers popups attached to layer-shell surfaces
  * (`parentKind: "layer"`) and to toplevel windows (`parentKind: "window"`);
  * use `parentKind` to discriminate if an effect should only apply to one
@@ -578,10 +714,63 @@ export interface WaylandPopup {
   readonly position: { x: number; y: number; width: number; height: number };
 }
 
-export interface WindowManagerEffectConfig {
+/**
+ * Assigns GPU-composited visual effects to the four layers of the scene graph.
+ * シーングラフの 4 つのレイヤーに GPU 合成エフェクトを割り当てます。
+ *
+ * All slots are independent — set only the ones you need.
+ * 各スロットは独立しています。必要なものだけ設定してください。
+ */
+export interface CompositorEffectConfig {
+  /**
+   * Full-screen background effect rendered beneath all windows. Set to `null`
+   * to disable.
+   * すべてのウィンドウの下に描画されるフルスクリーン背景エフェクト。`null` で無効化。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.effect.background_effect = compileEffect(({ backdrop }) =>
+   *   dualKawaseBlur(backdrop(), { passes: 3, offset: 2.5 }),
+   * );
+   * ```
+   */
   background_effect: CompiledEffectHandle | null;
+  /**
+   * Per-window effect factory. Called once per mapped toplevel; return `null`
+   * to apply no effect to that window.
+   * マップされたトップレベルウィンドウごとに1回呼ばれるエフェクトファクトリー。
+   * そのウィンドウにエフェクトを適用しない場合は `null` を返します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.effect.window = (window) =>
+   *   window.isFullscreen ? null : { shader: frostedGlass };
+   * ```
+   */
   window?: (window: WaylandWindow) => WindowEffectAssignment | null;
+  /**
+   * Per-layer-shell-surface effect factory.
+   * レイヤーシェルサーフェスごとのエフェクトファクトリー。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.effect.layer = (layer) =>
+   *   layer.namespace === "bar" ? { shader: panelBlur } : null;
+   * ```
+   */
   layer?: (layer: WaylandLayer) => LayerEffectAssignment | null;
+  /**
+   * Per-popup effect factory. Covers both window-attached and layer-attached
+   * popups; use `parentKind` to discriminate if needed.
+   * ウィンドウ・レイヤー両方に付いたポップアップごとのエフェクトファクトリー。
+   * 必要に応じて `parentKind` で区別できます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.effect.popup = (popup) =>
+   *   popup.parentKind === "layer" ? { shader: tooltipBlur } : null;
+   * ```
+   */
   popup?: (popup: WaylandPopup) => PopupEffectAssignment | null;
 }
 
@@ -661,14 +850,54 @@ export type OutputConfigureFactory = (
   context: OutputConfigureContext,
 ) => DisplayConfigDraft;
 
+/**
+ * Read-only view onto connected outputs and the current display configuration.
+ * Lets config code query output geometry and register a factory that produces a
+ * `DisplayConfigDraft` whenever the connected-output set changes.
+ * 接続中の出力と現在のディスプレイ設定への読み取り専用ビュー。出力のジオメトリを
+ * 取得したり、接続中の出力セットが変わるたびに `DisplayConfigDraft` を返す
+ * ファクトリーを登録したりできます。
+ *
+ * @example Configure multi-monitor layout / マルチモニターレイアウトを設定
+ * ```ts
+ * COMPOSITOR.output.configure((ctx) => ({
+ *   "DP-1":  { resolution: { width: 2560, height: 1440, refreshRate: 144 } },
+ *   "eDP-1": { resolution: "best", scale: 2 },
+ * }));
+ * ```
+ *
+ * @example Read output info / 出力情報を読む
+ * ```ts
+ * const hz = COMPOSITOR.output.get("DP-1")?.resolution?.refreshRate;
+ * const [primary] = COMPOSITOR.output.outputs;
+ * ```
+ */
 export interface OutputController {
+  /** Names of all currently connected and enabled outputs. / 接続・有効な出力名の一覧。 */
   readonly list: string[];
+  /** Snapshot of every connected output. / 接続中の全出力のスナップショット。 */
   readonly outputs: OutputInfo[];
+  /** Snapshots keyed by output name. / 出力名をキーとしたスナップショット。 */
   readonly current: Record<string, OutputInfo>;
+  /** Returns the snapshot for `outputName`, or `undefined` if not found. / 指定名の出力スナップショット。見つからない場合は `undefined`。 */
   get(outputName: string): OutputInfo | undefined;
+  /** Returns the first output matching `predicate`. / `predicate` に一致する最初の出力を返します。 */
   find(predicate: (output: OutputInfo) => boolean): OutputInfo | undefined;
+  /** All DRM modes reported by the driver for `outputName`. / ドライバーが報告する全 DRM モード。 */
   availableModes(outputName: string): OutputMode[];
+  /**
+   * Registers a factory that the compositor calls whenever the set of connected
+   * outputs changes. The factory returns a `DisplayConfigDraft` (a map of output
+   * name → config) describing the desired layout.
+   * 接続中の出力セットが変わるたびにコンポジターが呼ぶファクトリーを登録します。
+   * ファクトリーは希望のレイアウトを表す `DisplayConfigDraft` を返します。
+   */
   configure(factory: OutputConfigureFactory): void;
+  /**
+   * Re-runs all registered `configure` factories immediately.
+   * Useful after programmatically changing display state.
+   * 登録済みの `configure` ファクトリーを即時再実行します。
+   */
   reconfigure(): void;
 }
 
@@ -742,11 +971,42 @@ export interface EnvUpdatePayload {
   publish: string[];
 }
 
+/**
+ * Manages the environment variables inherited by child processes spawned via
+ * `COMPOSITOR.process`. Changes take effect for processes started after the
+ * call; running processes are unaffected unless you call `publish`.
+ * `COMPOSITOR.process` で起動される子プロセスが継承する環境変数を管理します。
+ * 変更は呼び出し後に起動されるプロセスに反映されます。実行中のプロセスには
+ * `publish` を呼ばない限り影響しません。
+ *
+ * @example
+ * ```ts
+ * COMPOSITOR.env.set("QT_QPA_PLATFORM", "wayland;xcb");
+ * COMPOSITOR.env.apply({
+ *   MOZ_ENABLE_WAYLAND: 1,
+ *   GDK_BACKEND: "wayland",
+ *   XCURSOR_SIZE: 24,
+ * });
+ * ```
+ */
 export interface EnvController {
+  /** Set a single environment variable. / 環境変数を 1 つ設定します。 */
   set(key: string, value: EnvValue): void;
+  /** Remove an environment variable. / 環境変数を削除します。 */
   unset(key: string): void;
+  /** Read the current value of a variable. / 変数の現在値を取得します。 */
   get(key: string): string | undefined;
+  /**
+   * Bulk set/unset. Pass `null` or `undefined` as a value to unset that key.
+   * 一括設定。値に `null` または `undefined` を渡すとその変数を削除します。
+   */
   apply(values: Record<string, EnvValue | null | undefined>): void;
+  /**
+   * Broadcast the current environment to running compositor services. If `keys`
+   * is omitted, all currently-set variables are published.
+   * 実行中のコンポジターサービスに現在の環境変数をブロードキャストします。
+   * `keys` を省略するとすべての設定済み変数を公開します。
+   */
   publish(keys?: Iterable<string>): void;
 }
 
@@ -790,9 +1050,52 @@ export type StartupServiceSpec = ProcessBaseSpec &
 
 export type ProcessSpawnSpec = ProcessBaseSpec & ProcessLaunchSpec;
 
+/**
+ * Launches and manages processes that are part of the desktop session.
+ * デスクトップセッションに属するプロセスの起動と管理を行います。
+ *
+ * Three launch modes / 3 種類の起動モード:
+ * - `once`    — run once at startup (optionally once per config version) / 起動時1回（設定バージョンごとも可）
+ * - `service` — keep running with an optional restart policy / オプションの再起動ポリシーで常駐
+ * - `spawn`   — fire-and-forget; compositor does not track the process / 追跡なし即時起動
+ *
+ * @example
+ * ```ts
+ * // One-shot: start foot server on first session launch
+ * COMPOSITOR.process.once("shell", {
+ *   command: ["foot", "--server"],
+ *   runPolicy: "once-per-session",
+ * });
+ *
+ * // Service: cliphist stays alive and restarts on failure
+ * COMPOSITOR.process.service("cliphist", {
+ *   command: "wl-paste --watch cliphist store",
+ *   restart: "on-failure",
+ * });
+ *
+ * // Spawn: open a terminal on demand
+ * COMPOSITOR.process.spawn({ command: ["kitty"] });
+ * ```
+ */
 export interface ProcessController {
+  /**
+   * Run a command once at session startup. By default runs once per session;
+   * set `runPolicy: "once-per-config-version"` to re-run when the config changes.
+   * セッション起動時に1回だけ実行します。デフォルトはセッションごとに1回。
+   * 設定変更時に再実行したい場合は `runPolicy: "once-per-config-version"` を指定します。
+   */
   once(id: string, spec: StartupOnceSpec): void;
+  /**
+   * Start a long-running service. The compositor monitors the process and
+   * restarts it according to `restart` policy.
+   * 常駐サービスを起動します。コンポジターがプロセスを監視し、`restart`
+   * ポリシーに従って再起動します。
+   */
   service(id: string, spec: StartupServiceSpec): void;
+  /**
+   * Launch a process and forget it. The compositor does not track or restart it.
+   * プロセスを起動して追跡しません。コンポジターは再起動も監視もしません。
+   */
   spawn(spec: ProcessSpawnSpec): void;
 }
 
@@ -802,7 +1105,32 @@ export interface KeyBindingOptions {
   on?: KeyBindingEventPhase;
 }
 
+/**
+ * Registers compositor-level keyboard shortcuts.
+ * コンポジターレベルのキーボードショートカットを登録します。
+ *
+ * Shortcuts are identified by a string `id` (shown in help UIs). The `shortcut`
+ * string uses modifier+key notation such as `"Super+T"` or `"Super+Shift+Left"`.
+ * ショートカットは文字列 `id` で識別されます（ヘルプ UI などに表示されます）。
+ * `shortcut` は `"Super+T"` や `"Super+Shift+Left"` のような記法を使います。
+ *
+ * @example
+ * ```ts
+ * COMPOSITOR.key.bind("launch-terminal", "Super+T", () => {
+ *   COMPOSITOR.process.spawn({ command: ["kitty"] });
+ * });
+ *
+ * // Tap binding: fires on Super key release / タップバインド: Superキーリリースで発火
+ * COMPOSITOR.key.bind("launcher", "Super", openLauncher, { on: "release" });
+ * ```
+ */
 export interface KeyBindingController {
+  /**
+   * Register a shortcut. `id` must be unique; registering the same id twice
+   * replaces the previous binding.
+   * ショートカットを登録します。`id` は一意である必要があります。
+   * 同じ `id` を2回登録すると前のバインドが上書きされます。
+   */
   bind(
     id: string,
     shortcut: string,
@@ -811,7 +1139,29 @@ export interface KeyBindingController {
   ): void;
 }
 
+/**
+ * Compositor-level pointer (mouse/touchpad cursor) configuration.
+ * コンポジターレベルのポインター（マウス・タッチパッドカーソル）設定。
+ *
+ * For per-device settings (acceleration, scroll method, …) use
+ * `COMPOSITOR.input.configure` instead.
+ * デバイスごとの設定（加速度・スクロール方式など）は `COMPOSITOR.input.configure`
+ * を使ってください。
+ *
+ * @example
+ * ```ts
+ * // Hold Super and drag any window to move it without grabbing its title bar
+ * // Super を押しながら任意のウィンドウをドラッグして移動（タイトルバー不要）
+ * COMPOSITOR.pointer.bindWindowMoveModifier("Super");
+ * ```
+ */
 export interface PointerController {
+  /**
+   * Set the modifier key that lets the user drag any window by holding the
+   * modifier and clicking anywhere on the window surface.
+   * 指定したモディファイアキーを押しながらウィンドウ上の任意の場所をクリック
+   * してドラッグできるようにします。
+   */
   bindWindowMoveModifier(modifier: string): void;
 }
 
@@ -888,14 +1238,64 @@ export type InputConfigureFactory = (
   context: InputConfigureContext,
 ) => void;
 
+/**
+ * Provides access to the currently connected input devices and lets config
+ * code adjust per-device settings (keyboard layout, touchpad behaviour, pointer
+ * acceleration, and so on).
+ * 接続中の入力デバイスへのアクセスと、デバイスごとの設定（キーボードレイアウト・
+ * タッチパッド挙動・ポインター加速度など）の調整を提供します。
+ *
+ * `configure` is the main entry-point: mutate the `InputConfigDraft` passed to
+ * your factory, then the compositor applies the diff. Call `reconfigure` to
+ * re-run all registered factories (e.g. after a device hotplug event).
+ * `configure` がメインのエントリーポイントです。ファクトリーに渡された
+ * `InputConfigDraft` を変更すると、コンポジターが差分を適用します。
+ * デバイスのホットプラグ後など再実行したい場合は `reconfigure` を呼びます。
+ *
+ * @example Global touchpad + keyboard defaults / グローバルなタッチパッド・キーボードのデフォルト
+ * ```ts
+ * COMPOSITOR.input.configure((input) => {
+ *   input.global = {
+ *     touchpad: { tapToClick: true, naturalScroll: true, disableWhileTyping: true },
+ *     keyboard: { layout: "us", options: "ctrl:nocaps" },
+ *   };
+ * });
+ * ```
+ *
+ * @example Per-device override / デバイスごとの上書き
+ * ```ts
+ * COMPOSITOR.input.configure((input, ctx) => {
+ *   for (const device of ctx.devices) {
+ *     if (device.kind.touchpad) {
+ *       input.device[device.key] = { touchpad: { scrollMethod: "twoFinger" } };
+ *     }
+ *   }
+ * });
+ * ```
+ */
 export interface InputController {
+  /** All currently connected input devices. / 接続中の入力デバイス一覧。 */
   readonly devices: InputDeviceInfo[];
+  /** Devices keyed by their unique key string. / ユニークなキー文字列をキーとしたデバイス一覧。 */
   readonly current: Record<string, InputDeviceInfo>;
+  /** Returns the device for `deviceKey`, or `undefined` if not found. / 指定キーのデバイス。見つからない場合は `undefined`。 */
   get(deviceKey: string): InputDeviceInfo | undefined;
+  /** Returns the first device matching `predicate`. / `predicate` に一致する最初のデバイスを返します。 */
   find(
     predicate: (device: InputDeviceInfo) => boolean,
   ): InputDeviceInfo | undefined;
+  /**
+   * Registers a factory that the compositor calls whenever the set of connected
+   * input devices changes. Mutate `input` (an `InputConfigDraft`) to apply
+   * global or per-device settings.
+   * 入力デバイスのセットが変わるたびにコンポジターが呼ぶファクトリーを登録します。
+   * `input`（`InputConfigDraft`）を変更してグローバルまたはデバイスごとの設定を適用します。
+   */
   configure(factory: InputConfigureFactory): void;
+  /**
+   * Re-runs all registered `configure` factories immediately.
+   * 登録済みの `configure` ファクトリーを即時再実行します。
+   */
   reconfigure(): void;
 }
 
@@ -1075,22 +1475,233 @@ export type WindowCompositionFunction = (
   context: WindowCompositionContext,
 ) => CompositionRenderable;
 
-export interface WindowManagerDefinition {
-  event: import("./events").WindowManagerEventController;
+/**
+ * The root API object exposed to ShojiWM config scripts.
+ * ShojiWM の設定スクリプトに公開されるルート API オブジェクト。
+ *
+ * Every field is a scoped controller covering one functional area: events,
+ * effects, outputs, input devices, environment, processes, key bindings, and
+ * so on. Typically you call methods at module top-level; the compositor then
+ * invokes your listeners and effect functions reactively at runtime.
+ * 各フィールドはイベント・エフェクト・出力・入力デバイス・環境変数・プロセス・
+ * キーバインドなど、1 つの機能領域をカバーするコントローラーです。
+ *
+ * @example Hot-reload lifecycle / ホットリロードライフサイクル
+ * ```ts
+ * COMPOSITOR.onEnable((event) => {
+ *   const saved = event.restore<{ count: number }>("my-state");
+ *   if (saved) count = saved.count;
+ * });
+ * COMPOSITOR.onDisable((event) => {
+ *   event.persist("my-state", { count });
+ * });
+ * ```
+ */
+export interface CompositorDefinition {
+  /**
+   * Lifecycle and window/layer/output/input event bus.
+   * ウィンドウ・レイヤー・出力・入力のライフサイクルイベントバス。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.event.onOpen((window) => console.log("opened", window.id));
+   * COMPOSITOR.event.onFocus((window, focused) => {
+   *   window.animation.start(focusVar, { to: focused ? 1 : 0, duration: ms(120) });
+   * });
+   * ```
+   */
+  event: import("./events").CompositorEventController;
+  /**
+   * Shorthand for `COMPOSITOR.event.onEnable`. Returns an unsubscribe function.
+   * `COMPOSITOR.event.onEnable` のショートハンド。解除関数を返します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.onEnable((event) => {
+   *   const saved = event.restore<MyState>("key");
+   *   if (saved) restore(saved);
+   * });
+   * ```
+   */
   onEnable(listener: import("./events").RuntimeEnableListener): () => void;
+  /**
+   * Shorthand for `COMPOSITOR.event.onDisable`. Use `event.persist` inside the
+   * listener to save state that survives a config hot-reload.
+   * `COMPOSITOR.event.onDisable` のショートハンド。リスナー内で `event.persist` を
+   * 呼ぶとホットリロードをまたいで状態を保持できます。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.onDisable((event) => {
+   *   event.persist("my-state", snapshot());
+   * });
+   * ```
+   */
   onDisable(listener: import("./events").RuntimeDisableListener): () => void;
   preload: PreloadController;
-  effect: WindowManagerEffectConfig;
+  /**
+   * Scene-graph effect assignments: background, per-window, per-layer, per-popup.
+   * シーングラフのエフェクト設定。背景・ウィンドウごと・レイヤーごと・ポップアップごと。
+   *
+   * @example Background blur / 背景ブラー
+   * ```ts
+   * COMPOSITOR.effect.background_effect = compileEffect(({ backdrop }) =>
+   *   dualKawaseBlur(backdrop(), { passes: 4, offset: 3 }),
+   * );
+   * ```
+   *
+   * @example Per-window effect / ウィンドウごとのエフェクト
+   * ```ts
+   * COMPOSITOR.effect.window = (window) =>
+   *   window.isFullscreen ? null : { shader: frostedGlass };
+   * ```
+   */
+  effect: CompositorEffectConfig;
+  /**
+   * Output (monitor) access and display layout configuration.
+   * 出力（モニター）へのアクセスとディスプレイレイアウト設定。
+   *
+   * @example Configure outputs / 出力を設定
+   * ```ts
+   * COMPOSITOR.output.configure((ctx) => ({
+   *   "DP-1":  { resolution: { width: 2560, height: 1440, refreshRate: 144 } },
+   *   "eDP-1": { resolution: "best", scale: 2 },
+   * }));
+   * ```
+   *
+   * @example Read current output info / 現在の出力情報を取得
+   * ```ts
+   * const info = COMPOSITOR.output.get("DP-1");
+   * console.log(info?.resolution?.refreshRate);
+   * ```
+   */
   output: OutputController;
+  /**
+   * Input device enumeration and per-device configuration.
+   * 入力デバイスの列挙とデバイスごとの設定。
+   *
+   * @example Configure touchpad and keyboard / タッチパッドとキーボードを設定
+   * ```ts
+   * COMPOSITOR.input.configure((input) => {
+   *   input.global = {
+   *     touchpad: { tapToClick: true, naturalScroll: true, disableWhileTyping: true },
+   *     keyboard: { layout: "us", options: "ctrl:nocaps" },
+   *   };
+   * });
+   * ```
+   */
   input: InputController;
+  /**
+   * Environment variable controller for child processes spawned by the compositor.
+   * コンポジターが起動する子プロセスが継承する環境変数を管理します。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.env.set("QT_QPA_PLATFORM", "wayland;xcb");
+   * COMPOSITOR.env.apply({ MOZ_ENABLE_WAYLAND: 1, GDK_BACKEND: "wayland" });
+   * ```
+   */
   env: EnvController;
+  /**
+   * Process lifecycle management: one-shot startup, managed services, and ad-hoc spawns.
+   * プロセスライフサイクル管理。起動時ワンショット・マネージドサービス・即時起動の 3 種類。
+   *
+   * @example One-shot on first session / セッション初回のみ起動
+   * ```ts
+   * COMPOSITOR.process.once("shell", { command: ["foot", "--server"] });
+   * ```
+   *
+   * @example Managed service with auto-restart / 自動再起動つきマネージドサービス
+   * ```ts
+   * COMPOSITOR.process.service("cliphist", {
+   *   command: "wl-paste --watch cliphist store",
+   *   restart: "on-failure",
+   * });
+   * ```
+   *
+   * @example Spawn on demand / オンデマンド起動
+   * ```ts
+   * COMPOSITOR.key.bind("terminal", "Super+T", () => {
+   *   COMPOSITOR.process.spawn({ command: ["kitty"] });
+   * });
+   * ```
+   */
   process: ProcessController;
+  /**
+   * Compositor-level keyboard shortcut bindings.
+   * コンポジターレベルのキーボードショートカットバインド。
+   *
+   * @example
+   * ```ts
+   * COMPOSITOR.key.bind("launch-terminal", "Super+T", () => {
+   *   COMPOSITOR.process.spawn({ command: ["kitty"] });
+   * });
+   * // Tap binding (fires on key release) / タップバインド（キーリリース時に発火）
+   * COMPOSITOR.key.bind("launcher", "Super", openLauncher, { on: "release" });
+   * ```
+   */
   key: KeyBindingController;
+  /**
+   * Compositor-level pointer (mouse) configuration.
+   * コンポジターレベルのポインター（マウス）設定。
+   *
+   * @example Drag windows with Super held / Super を押しながらウィンドウをドラッグ
+   * ```ts
+   * COMPOSITOR.pointer.bindWindowMoveModifier("Super");
+   * ```
+   */
   pointer: PointerController;
   runtime: RuntimeController;
-  window: WindowManagerWindowController;
+  /**
+   * Per-window scene-tree composition. Assign a function to control what chrome
+   * (borders, shadows, managed-window placement) wraps each toplevel window.
+   * ウィンドウごとのシーンツリー合成。各トップレベルウィンドウをラップするクローム
+   * （ボーダー・影・ManagedWindow の配置）を制御する関数を割り当てます。
+   *
+   * @example
+   * ```tsx
+   * COMPOSITOR.window.composition = (window) => (
+   *   <ManagedWindow rect={layoutRect(window)} zIndex={getZIndex(window)}>
+   *     <WindowBorder style={{ borderRadius: 8, border: { px: 1, color: "#ffffff33" } }}>
+   *       <ClientWindow />
+   *     </WindowBorder>
+   *   </ManagedWindow>
+   * );
+   * ```
+   */
+  window: CompositorWindowController;
+  /**
+   * Layer-shell surface access and usable-area queries.
+   * レイヤーシェルサーフェスへのアクセスと使用可能エリアのクエリ。
+   *
+   * @example Place windows below the top bar / トップバーの下にウィンドウを配置
+   * ```ts
+   * const usable = COMPOSITOR.layer.usableArea("DP-1");
+   * // usable.y is already offset past the bar / usable.y はバーの下から始まります
+   * ```
+   *
+   * @example Get reserved insets / 予約済みインセットを取得
+   * ```ts
+   * const { top, bottom } = COMPOSITOR.layer.reservedInsets("DP-1");
+   * ```
+   */
   layer: LayerController;
+  /**
+   * Debug knobs — toggles and overlays that don't affect production behavior.
+   * デバッグ用トグルとオーバーレイ。本番動作には影響しません。
+   *
+   * @example Toggle FPS overlay / FPS オーバーレイを切り替え
+   * ```ts
+   * COMPOSITOR.key.bind("toggle-fps", "Super+Shift+F", () => {
+   *   COMPOSITOR.debug.fpsCounter = !COMPOSITOR.debug.fpsCounter;
+   * });
+   * ```
+   */
   debug: DebugController;
+  /**
+   * Optional default display mode applied before `output.configure` fires.
+   * `output.configure` が呼ばれる前に適用されるデフォルト表示モード（省略可）。
+   */
   display?: DisplayConfig;
 }
 
@@ -1239,7 +1850,7 @@ export interface WaylandWindowActions {
   isXWayland(): boolean;
 }
 
-export interface WindowManagerWindowController {
+export interface CompositorWindowController {
   /**
    * Per-window composition function. Returns the scene tree (chrome,
    * managed-window placements, effects) for a given `WaylandWindow`. The
@@ -1254,7 +1865,7 @@ export interface WindowManagerWindowController {
    * Request keyboard focus for `window`. The compositor raises it, updates
    * keyboard focus, and emits the usual focus-changed notifications — so
    * `isFocused` signals, composition reevaluation, and
-   * `WINDOW_MANAGER.event.onFocus` listeners all fire just as they would for
+   * `COMPOSITOR.event.onFocus` listeners all fire just as they would for
    * a user-initiated focus change.
    */
   focus(window: WaylandWindow): void;

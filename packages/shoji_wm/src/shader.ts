@@ -68,6 +68,7 @@ export interface CompileLayerEffectOptions extends CompileEffectOptions {
 // Base directory for relative asset paths (shaders, images, fonts). Callers
 // pass the already-resolved config package root - typically the directory
 // containing the nearest ancestor package.json of the entry config file.
+/** @internal */
 export function installAssetResolverBridge(configRoot: string): void {
   assetBaseDir = normalizePath(
     isAbsolutePath(configRoot) ? configRoot : resolvePath("/", configRoot),
@@ -82,6 +83,17 @@ export function resolveAssetPath(path: string): string {
   return isAbsolutePath(path) ? path : resolvePath(assetBaseDir, path);
 }
 
+/**
+ * Load a GLSL shader from a file path (relative to the config package root).
+ * Returns a handle that can be passed to `shaderStage` or `shaderInput`.
+ * 設定パッケージルートからの相対パスで GLSL シェーダーをロードします。
+ * `shaderStage` または `shaderInput` に渡せるハンドルを返します。
+ *
+ * @example
+ * ```ts
+ * const myShader = loadShader("shaders/frosted.glsl");
+ * ```
+ */
 export function loadShader(path: string): ShaderModuleHandle {
   return {
     kind: "shader-module",
@@ -89,14 +101,52 @@ export function loadShader(path: string): ShaderModuleHandle {
   };
 }
 
+/**
+ * Capture the composited scene **beneath** the current surface as an effect
+ * input. This is what you use to implement blur or tint that reads the
+ * wallpaper + windows behind the current window/layer.
+ * 現在のサーフェスの**下**の合成済みシーンをエフェクト入力としてキャプチャします。
+ * 現在のウィンドウ・レイヤーの背後にある壁紙やウィンドウを読み取るブラーや
+ * 色付けを実装するときに使います。
+ *
+ * @example
+ * ```ts
+ * compileEffect({
+ *   input: backdropSource(),
+ *   pipeline: [dualKawaseBlur({ passes: 3 })],
+ * });
+ * ```
+ */
 export function backdropSource(): BackdropSourceHandle {
   return { kind: "backdrop-source" };
 }
 
+/**
+ * Like `backdropSource`, but samples the scene as if the current surface were
+ * not present (X-ray through itself). Useful for overlay-style effects that
+ * need the unobstructed background.
+ * `backdropSource` と同様ですが、現在のサーフェスが存在しないかのようにシーンを
+ * サンプリングします（自分自身を透過）。自身に遮られていない背景が必要な
+ * オーバーレイスタイルのエフェクトに便利です。
+ */
 export function xrayBackdropSource(): XrayBackdropSourceHandle {
   return { kind: "xray-backdrop-source" };
 }
 
+/**
+ * Capture the **window's own rendered content** as an effect input.
+ * Use `include: "root-surface"` to exclude sub-surfaces (popups, etc.).
+ * **ウィンドウ自身のレンダリング済みコンテンツ**をエフェクト入力としてキャプチャします。
+ * `include: "root-surface"` でサブサーフェス（ポップアップ等）を除外できます。
+ *
+ * @example
+ * ```ts
+ * compileWindowEffect({
+ *   input: windowSource(),
+ *   pipeline: [shaderStage("shaders/outline.glsl")],
+ * });
+ * ```
+ */
 export function windowSource(
   options: { include?: "full" | "root-surface" } = {},
 ): WindowSourceHandle {
@@ -106,6 +156,11 @@ export function windowSource(
   };
 }
 
+/**
+ * Capture a **layer-shell surface's own rendered content** as an effect input.
+ * **レイヤーシェルサーフェス自身のレンダリング済みコンテンツ**をエフェクト入力として
+ * キャプチャします。
+ */
 export function layerSource(
   options: { include?: "full" | "root-surface" } = {},
 ): LayerSourceHandle {
@@ -115,7 +170,12 @@ export function layerSource(
   };
 }
 
-/** The popup's own rendered content as an effect input. */
+/**
+ * Capture a **popup's own rendered content** as an effect input. Covers both
+ * window-attached and layer-attached popups.
+ * **ポップアップ自身のレンダリング済みコンテンツ**をエフェクト入力としてキャプチャします。
+ * ウィンドウ・レイヤー両方に付いたポップアップが対象です。
+ */
 export function popupSource(
   options: { include?: "full" | "root-surface" } = {},
 ): PopupSourceHandle {
@@ -125,6 +185,17 @@ export function popupSource(
   };
 }
 
+/**
+ * Load an image from a file path (relative to the config package root) as an
+ * effect input texture. Useful for custom overlays or masks.
+ * 設定パッケージルートからの相対パスで画像ファイルをエフェクト入力テクスチャとして
+ * ロードします。カスタムオーバーレイやマスクに便利です。
+ *
+ * @example
+ * ```ts
+ * const mask = imageSource("assets/mask.png");
+ * ```
+ */
 export function imageSource(path: string): ImageSourceHandle {
   return {
     kind: "image-source",
@@ -132,6 +203,21 @@ export function imageSource(path: string): ImageSourceHandle {
   };
 }
 
+/**
+ * Reference a named texture previously stored by a `save()` stage in the
+ * same pipeline. Use this to reuse an intermediate result in a later stage.
+ * 同じパイプライン内の `save()` ステージが保存した名前付きテクスチャを参照します。
+ * 中間結果を後のステージで再利用するために使います。
+ *
+ * @example
+ * ```ts
+ * pipeline: [
+ *   dualKawaseBlur({ passes: 2 }),
+ *   save("blurred"),
+ *   shaderStage("shaders/tint.glsl", { textures: { blurred: get("blurred") } }),
+ * ]
+ * ```
+ */
 export function get(name: string): NamedTextureHandle {
   return {
     kind: "named-texture",
@@ -139,6 +225,21 @@ export function get(name: string): NamedTextureHandle {
   };
 }
 
+/**
+ * Create a GLSL shader **pipeline stage** that reads the previous stage's output
+ * (or the effect input) and writes to the next stage.
+ * Accepts a path string or a pre-loaded `ShaderModuleHandle`.
+ * 前のステージ（またはエフェクト入力）を読み取り、次のステージへ書き込む
+ * GLSL シェーダー**パイプラインステージ**を作成します。
+ * パス文字列または事前ロード済みの `ShaderModuleHandle` を渡せます。
+ *
+ * @example
+ * ```ts
+ * shaderStage("shaders/vignette.glsl", {
+ *   uniforms: { strength: 0.4 },
+ * })
+ * ```
+ */
 export function shaderStage(
   shader: string | ShaderModuleHandle,
   options: {
@@ -154,6 +255,14 @@ export function shaderStage(
   };
 }
 
+/**
+ * Like `shaderStage`, but used as the **input** slot of `compileEffect` rather
+ * than in the pipeline array. The shader pre-processes the source texture before
+ * the pipeline stages run.
+ * `shaderStage` と同様ですが、パイプライン配列ではなく `compileEffect` の
+ * **input** スロットに使います。パイプラインステージが実行される前に
+ * ソーステクスチャを前処理します。
+ */
 export function shaderInput(
   shader: string | ShaderModuleHandle,
   options: {
@@ -169,6 +278,17 @@ export function shaderInput(
   };
 }
 
+/**
+ * Add a GPU noise overlay to the pipeline. Useful for adding film grain or
+ * dithering to reduce banding on gradients/blurs.
+ * パイプラインに GPU ノイズオーバーレイを追加します。フィルムグレインの追加や
+ * グラデーション・ブラーのバンディング軽減のためのディザリングに便利です。
+ *
+ * @example
+ * ```ts
+ * pipeline: [dualKawaseBlur({ passes: 3 }), noise({ amount: 0.04 })]
+ * ```
+ */
 export function noise(
   options: { kind?: NoiseKind; amount?: number } = {},
 ): NoiseStageHandle {
@@ -179,6 +299,19 @@ export function noise(
   };
 }
 
+/**
+ * GPU dual-Kawase blur stage. Runs a downscale/upscale blur pyramid; increasing
+ * `passes` spreads the blur radius, increasing `offset` sharpens each sample.
+ * A good starting point for background blur is `{ passes: 3, offset: 2.5 }`.
+ * GPU デュアル川瀬ブラーステージ。ダウンスケール・アップスケールのブラーピラミッドを
+ * 実行します。`passes` を増やすとブラー半径が広がり、`offset` を増やすと各サンプルが
+ * 鮮明になります。背景ブラーの出発点として `{ passes: 3, offset: 2.5 }` が適切です。
+ *
+ * @example
+ * ```ts
+ * pipeline: [dualKawaseBlur({ passes: 4, offset: 3 })]
+ * ```
+ */
 export function dualKawaseBlur(
   options: BackdropBlurOptions = {},
 ): DualKawaseBlurStageHandle {
@@ -189,6 +322,17 @@ export function dualKawaseBlur(
   };
 }
 
+/**
+ * Save the current pipeline output to a named slot for later retrieval with
+ * `get(name)`. The pipeline continues from the saved value.
+ * 現在のパイプライン出力を名前付きスロットに保存し、後で `get(name)` で取得できます。
+ * パイプラインは保存した値から続きます。
+ *
+ * @example
+ * ```ts
+ * pipeline: [dualKawaseBlur({ passes: 2 }), save("blurred")]
+ * ```
+ */
 export function save(name: string): SaveStageHandle {
   return {
     kind: "save",
@@ -196,6 +340,20 @@ export function save(name: string): SaveStageHandle {
   };
 }
 
+/**
+ * Blend another `EffectInputHandle` over the current pipeline output using the
+ * given blend mode and optional alpha.
+ * 指定したブレンドモードとオプションのアルファを使って、別の `EffectInputHandle` を
+ * 現在のパイプライン出力にブレンドします。
+ *
+ * @example Tint a blurred backdrop with semi-transparent color
+ * ```ts
+ * pipeline: [
+ *   dualKawaseBlur({ passes: 3 }),
+ *   blend(imageSource("assets/overlay.png"), { mode: "screen", alpha: 0.5 }),
+ * ]
+ * ```
+ */
 export function blend(
   input: EffectInputHandle,
   options: { mode?: BlendMode; alpha?: number } = {},
@@ -208,6 +366,12 @@ export function blend(
   };
 }
 
+/**
+ * Wrap a compiled `CompiledEffectHandle` as a pipeline stage so it can be
+ * embedded inside another effect's pipeline as a reusable sub-effect.
+ * コンパイル済みの `CompiledEffectHandle` をパイプラインステージとしてラップし、
+ * 別のエフェクトのパイプライン内に再利用可能なサブエフェクトとして組み込みます。
+ */
 export function unit(effect: CompiledEffectHandle): UnitStageHandle {
   return {
     kind: "unit",
@@ -256,6 +420,22 @@ function normalizePath(path: string): string {
   return joined || ".";
 }
 
+/**
+ * Compile a background effect from a source input and a pipeline of stages.
+ * The result is assigned to `COMPOSITOR.effect.background_effect` or passed
+ * to `unit()` to compose it inside another effect.
+ * ソース入力とステージのパイプラインから背景エフェクトをコンパイルします。
+ * 結果は `COMPOSITOR.effect.background_effect` に割り当てるか、`unit()` で
+ * 別のエフェクト内に組み込みます。
+ *
+ * @example Frosted-glass backdrop blur / すりガラス背景ブラー
+ * ```ts
+ * COMPOSITOR.effect.background_effect = compileEffect({
+ *   input: backdropSource(),
+ *   pipeline: [dualKawaseBlur({ passes: 3, offset: 2.5 }), noise({ amount: 0.03 })],
+ * });
+ * ```
+ */
 export function compileEffect(
   options: CompileEffectOptions,
 ): CompiledEffectHandle {
@@ -271,6 +451,25 @@ export function compileEffect(
   };
 }
 
+/**
+ * Compile a per-window effect. Like `compileEffect` but scoped to a single
+ * window's surface. Optionally specify `outsets` to render beyond the window
+ * bounds (e.g. for a drop-shadow or glow).
+ * ウィンドウごとのエフェクトをコンパイルします。`compileEffect` と同様ですが、
+ * 1 つのウィンドウのサーフェスにスコープされます。`outsets` でウィンドウ境界の外側に
+ * レンダリングできます（ドロップシャドウやグローなど）。
+ *
+ * @example Per-window drop shadow / ウィンドウごとのドロップシャドウ
+ * ```ts
+ * COMPOSITOR.effect.window = () => ({
+ *   effect: compileWindowEffect({
+ *     input: windowSource(),
+ *     pipeline: [shaderStage("shaders/shadow.glsl")],
+ *     outsets: { top: 0, right: 20, bottom: 20, left: 20 },
+ *   }),
+ * });
+ * ```
+ */
 export function compileWindowEffect(
   options: CompileWindowEffectOptions,
 ): WindowEffectHandle {
@@ -281,6 +480,22 @@ export function compileWindowEffect(
   };
 }
 
+/**
+ * Compile a per-layer-shell-surface effect. Returned from
+ * `COMPOSITOR.effect.layer` to apply an effect to a specific layer surface.
+ * レイヤーシェルサーフェスごとのエフェクトをコンパイルします。
+ * `COMPOSITOR.effect.layer` から返すことで特定のレイヤーサーフェスにエフェクトを適用します。
+ *
+ * @example Bar blur / バーブラー
+ * ```ts
+ * const barBlur = compileLayerEffect({
+ *   input: backdropSource(),
+ *   pipeline: [dualKawaseBlur({ passes: 2 })],
+ * });
+ * COMPOSITOR.effect.layer = (layer) =>
+ *   layer.namespace.value === "bar" ? { effect: barBlur } : null;
+ * ```
+ */
 export function compileLayerEffect(
   options: CompileLayerEffectOptions,
 ): LayerEffectHandle {
@@ -296,6 +511,13 @@ export interface CompilePopupEffectOptions extends CompileEffectOptions {
   outsets?: EffectOutsets;
 }
 
+/**
+ * Compile a per-popup effect. Returned from `COMPOSITOR.effect.popup` to
+ * apply an effect to a specific popup (tooltip, context menu, etc.).
+ * ポップアップごとのエフェクトをコンパイルします。
+ * `COMPOSITOR.effect.popup` から返すことで特定のポップアップ（ツールチップ・
+ * コンテキストメニュー等）にエフェクトを適用します。
+ */
 export function compilePopupEffect(
   options: CompilePopupEffectOptions,
 ): PopupEffectHandle {

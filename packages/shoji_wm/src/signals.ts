@@ -2,21 +2,67 @@ import { registerOwnedComputed, trackSignalRead, trackSignalWrite } from "./runt
 
 export type SignalSetter<T> = (next: T | ((current: T) => T)) => void;
 
+/**
+ * A reactive read-only value. Reading `.value` inside a composition function
+ * registers a dependency; the compositor re-runs the function whenever the
+ * signal changes.
+ * リアクティブな読み取り専用値。合成関数内で `.value` を読むと依存関係が登録され、
+ * シグナルが変化するたびにコンポジターが関数を再実行します。
+ *
+ * Calling the signal as a function is an alias for reading `.value`.
+ * Calling it with a mapper `signal(x => ...)` returns a derived `ReadonlySignal<U>`.
+ * 関数として呼ぶことは `.value` を読むことと同等です。
+ * マッパーを渡して `signal(x => ...)` と呼ぶと派生シグナル `ReadonlySignal<U>` を返します。
+ *
+ * @example
+ * ```ts
+ * // Read in composition (tracks dependency)
+ * const focused = window.isFocused.value;
+ *
+ * // Derive a mapped signal
+ * const scale = window.animation.variable(openVar)((x) => 0.8 + x * 0.2);
+ * window.transform.scaleX = scale;
+ *
+ * // Subscribe outside composition
+ * const unsub = window.title.subscribe(() => console.log(window.title.value));
+ * ```
+ */
 export interface ReadonlySignal<T> {
+  /** Read the current value (tracks dependency if inside a reactive context). / 現在の値を読みます（リアクティブなコンテキスト内では依存関係を追跡します）。 */
   (): T;
+  /** Create a derived signal by mapping this signal's value. / この値をマップした派生シグナルを作成します。 */
   <U>(map: (value: T) => U): ReadonlySignal<U>;
+  /** The current value. Reading this inside composition registers a dependency. / 現在の値。合成内で読むと依存関係が登録されます。 */
   readonly value: T;
+  /**
+   * Subscribe to changes. The listener fires after each write that changes the
+   * value. Returns an unsubscribe function.
+   * 変更を購読します。値が変わるたびにリスナーが呼ばれます。解除関数を返します。
+   */
   subscribe(listener: () => void): () => void;
+  /** Read the current value WITHOUT registering a dependency. / 依存関係を登録せずに現在の値を読みます。 */
   peek(): T;
 }
 
+/**
+ * A reactive read-write value. Extends `ReadonlySignal<T>` with mutation
+ * methods. Use `useState` / `createWindowState` inside composition; use
+ * `signal()` at module scope.
+ * リアクティブな読み書き可能な値。`ReadonlySignal<T>` を拡張して変更メソッドを追加します。
+ * 合成内では `useState` / `createWindowState` を使い、モジュールスコープでは
+ * `signal()` を使います。
+ */
 export interface Signal<T>
   extends ReadonlySignal<T> {
+  /** Set a new value (triggers dependents). / 新しい値を設定します（依存関係をトリガーします）。 */
   value: T;
+  /** Functional setter; pass a new value or an updater `(current) => next`. / 新しい値またはアップデーター `(current) => next` を渡す関数型セッター。 */
   set: SignalSetter<T>;
+  /** Update via a mapping function. Equivalent to `signal.set(x => f(x))`. / マッピング関数で更新します。`signal.set(x => f(x))` と同等です。 */
   update(map: (current: T) => T): void;
 }
 
+/** A `Signal<T>` that also destructures as `[signal, setter]`. / `[signal, setter]` として分解代入もできる `Signal<T>`。 */
 export type SignalTuple<T> = Signal<T> & readonly [Signal<T>, SignalSetter<T>];
 
 interface ReactiveComputation {
@@ -249,19 +295,66 @@ class EffectHandle implements ReactiveComputation {
   }
 }
 
+/**
+ * Create a writable signal at module (non-component) scope. For reactive state
+ * inside a composition function, prefer `useState` instead.
+ * モジュール（非コンポーネント）スコープで書き込み可能なシグナルを作成します。
+ * 合成関数内のリアクティブな状態には `useState` を使ってください。
+ *
+ * @example
+ * ```ts
+ * const [count, setCount] = signal(0);
+ * setCount(count.value + 1);
+ * // or
+ * count.update((n) => n + 1);
+ * ```
+ */
 export function signal<T>(initialValue: T): SignalTuple<T> {
   return createWritableSignalFacade(new WritableSignal(initialValue));
 }
 
+/**
+ * Create a read-only derived signal at module scope. The `compute` function
+ * re-runs lazily whenever its signal dependencies change.
+ * For reactive derived values inside a composition function, prefer `useComputed`.
+ * モジュールスコープで読み取り専用の派生シグナルを作成します。`compute` 関数は
+ * シグナルの依存関係が変わったときに遅延再実行されます。
+ * 合成関数内の派生値には `useComputed` を使ってください。
+ *
+ * @example
+ * ```ts
+ * const fullTitle = computed(() => `${app.value} — ${title.value}`);
+ * ```
+ */
 export function computed<T>(compute: () => T): ReadonlySignal<T> {
   return createReadonlySignalFacade(new ComputedSignal(compute));
 }
 
+/**
+ * Run a side effect at module scope whenever its signal dependencies change.
+ * Returns an unsubscribe/dispose function.
+ * シグナルの依存関係が変わったときにモジュールスコープでサイドエフェクトを実行します。
+ * 解除・破棄関数を返します。
+ *
+ * @example
+ * ```ts
+ * const dispose = effect(() => {
+ *   document.title = title.value;
+ * });
+ * // later: dispose();
+ * ```
+ */
 export function effect(run: () => void): () => void {
   const handle = new EffectHandle(run);
   return () => handle.dispose();
 }
 
+/**
+ * Returns `true` if `value` is a `ReadonlySignal`. Useful to narrow a
+ * `MaybeSignal<T>` at runtime.
+ * `value` が `ReadonlySignal` かどうかを判定します。
+ * `MaybeSignal<T>` を実行時に絞り込むのに便利です。
+ */
 export function isSignal<T>(value: unknown): value is ReadonlySignal<T> {
   return (
     (typeof value === "function" || typeof value === "object") &&
@@ -271,6 +364,18 @@ export function isSignal<T>(value: unknown): value is ReadonlySignal<T> {
   );
 }
 
+/**
+ * Unwrap a `MaybeSignal<T>`: if `value` is a signal, return its current value;
+ * otherwise return the value as-is.
+ * `MaybeSignal<T>` を展開します。シグナルならその現在値を、そうでなければ値をそのまま返します。
+ *
+ * @example
+ * ```ts
+ * function getTitle(title: MaybeSignal<string>): string {
+ *   return read(title); // works for both "Hello" and a signal
+ * }
+ * ```
+ */
 export function read<T>(value: T | ReadonlySignal<T>): T {
   return isSignal<T>(value) ? value.value : value;
 }

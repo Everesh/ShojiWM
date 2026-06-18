@@ -74,7 +74,7 @@ export interface AnimationController {
    * ```ts
    * const open = animationVariable("open")
    *
-   * WINDOW_MANAGER.event.onOpen((window) => {
+   * COMPOSITOR.event.onOpen((window) => {
    *   window.animation.start(open, {
    *     duration: seconds(0.18),
    *     from: 0,
@@ -82,7 +82,7 @@ export interface AnimationController {
    *   })
    * })
    *
-   * WINDOW_MANAGER.event.onFocus((window, focused) => {
+   * COMPOSITOR.event.onFocus((window, focused) => {
    *   window.animation.start(open, {
    *     duration: milliseconds(120),
    *     to: focused ? 1 : 0,

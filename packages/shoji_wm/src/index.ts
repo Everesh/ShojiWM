@@ -105,9 +105,9 @@ import type {
   WindowBorderProps,
   WindowBorderInteraction,
   WindowResizeHitArea,
-  WindowManagerDefinition,
-  WindowManagerEffectConfig,
-  WindowManagerWindowController,
+  CompositorDefinition,
+  CompositorEffectConfig,
+  CompositorWindowController,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -150,7 +150,7 @@ import type {
   SSDRebuildSuppressionOptions,
   SSDRebuildSuppressionViolationPolicy,
 } from "./types";
-import { createWindowManagerEventController } from "./events";
+import { createCompositorEventController } from "./events";
 import { suppressSSDRebuild, withSSDRebuildSuppressed } from "./runtime-hooks";
 import {
   KEY_BINDING_CONTROLLER,
@@ -243,7 +243,7 @@ export {
   type EasingFunction,
 } from "./easing";
 export {
-  createWindowManagerEventController,
+  createCompositorEventController,
   type LayerCreateListener,
   type LayerDestroyListener,
   type LayerUpdateListener,
@@ -257,7 +257,7 @@ export {
   type WindowFirstCommitListener,
   type WindowFocusListener,
   type WindowInitialConfigureListener,
-  type WindowManagerEventController,
+  type CompositorEventController,
   type WindowOpenListener,
   type WindowResizeEdges,
   type WindowResizeEvent,
@@ -521,9 +521,9 @@ export type {
   WindowBorderProps,
   WindowBorderInteraction,
   WindowResizeHitArea,
-  WindowManagerDefinition,
-  WindowManagerEffectConfig,
-  WindowManagerWindowController,
+  CompositorDefinition,
+  CompositorEffectConfig,
+  CompositorWindowController,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -618,7 +618,7 @@ export const Window = ClientWindow;
 export const WindowBorder =
   defineIntrinsicComponent<WindowBorderProps>("WindowBorder");
 
-const WINDOW_CONTROLLER: WindowManagerWindowController = {
+const WINDOW_CONTROLLER: CompositorWindowController = {
   composition: null,
   focus(window) {
     window.focus();
@@ -633,10 +633,51 @@ const RUNTIME_CONTROLLER: RuntimeController = {
 const PRELOAD_CONTROLLER: PreloadController = {};
 
 /**
- * Placeholder namespace for future WM-level entrypoints.
+ * The ShojiWM compositor API root — the single entry-point for all config-layer
+ * interactions with the compositor.
+ * ShojiWM コンポジター API のルートオブジェクト。設定スクリプトからコンポジターへの
+ * すべての操作はここから始まります。
+ *
+ * @example Startup processes + key bindings / 起動プロセス + キーバインド
+ * ```ts
+ * COMPOSITOR.process.once("shell", { command: ["foot", "--server"] });
+ * COMPOSITOR.env.set("QT_QPA_PLATFORM", "wayland;xcb");
+ *
+ * COMPOSITOR.key.bind("terminal", "Super+T", () => {
+ *   COMPOSITOR.process.spawn({ command: ["kitty"] });
+ * });
+ * ```
+ *
+ * @example Window composition / ウィンドウ合成
+ * ```tsx
+ * COMPOSITOR.window.composition = (window) => (
+ *   <ManagedWindow rect={layoutRect(window)} zIndex={getZIndex(window)}>
+ *     <WindowBorder style={{ borderRadius: 8 }}>
+ *       <ClientWindow />
+ *     </WindowBorder>
+ *   </ManagedWindow>
+ * );
+ * ```
+ *
+ * @example Output configuration / 出力設定
+ * ```ts
+ * COMPOSITOR.output.configure((ctx) => ({
+ *   "DP-1":  { resolution: { width: 2560, height: 1440, refreshRate: 144 } },
+ *   "eDP-1": { resolution: "best", scale: 2 },
+ * }));
+ * ```
+ *
+ * @example Hot-reload lifecycle / ホットリロードライフサイクル
+ * ```ts
+ * COMPOSITOR.onDisable((event) => { event.persist("state", snapshot()); });
+ * COMPOSITOR.onEnable((event) => {
+ *   const saved = event.restore<MyState>("state");
+ *   if (saved) restore(saved);
+ * });
+ * ```
  */
-export const WINDOW_MANAGER: WindowManagerDefinition = {
-  event: createWindowManagerEventController(),
+export const COMPOSITOR: CompositorDefinition = {
+  event: createCompositorEventController(),
   onEnable(listener) {
     return this.event.onEnable(listener);
   },
@@ -660,11 +701,11 @@ export const WINDOW_MANAGER: WindowManagerDefinition = {
 };
 
 installOutputChangeEmitter((event) => {
-  WINDOW_MANAGER.event.emitOutputChange(event);
+  COMPOSITOR.event.emitOutputChange(event);
 });
 
 installInputDeviceChangeEmitter((event) => {
-  WINDOW_MANAGER.event.emitInputDeviceChange(event);
+  COMPOSITOR.event.emitInputDeviceChange(event);
 });
 
 export function windowAction(action: WindowActionType): WindowActionDescriptor {
