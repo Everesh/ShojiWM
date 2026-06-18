@@ -292,6 +292,9 @@ WINDOW_MANAGER.key.bind("toggle-tiling-mode", "Super+S", () => {
 WINDOW_MANAGER.key.bind("close-focused-window", "Super+Q", () => {
   HYBRID_WINDOW_MANAGER.closeFocusedWindow();
 });
+WINDOW_MANAGER.key.bind("toggle-focused-window-maximize", "Super+M", () => {
+  HYBRID_WINDOW_MANAGER.toggleFocusedWindowMaximize();
+});
 WINDOW_MANAGER.key.bind("tile-focus-left-quick", "Super+Left", () => {
   HYBRID_WINDOW_MANAGER.focusTile(-1);
 });

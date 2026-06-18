@@ -1104,6 +1104,22 @@ export class HybridWindowManager {
     }
   }
 
+  public toggleFocusedWindowMaximize() {
+    for (const workspace of this.workspaces.values()) {
+      const focused = workspace.focusedWindow();
+      if (!focused || !read(focused.isResizable)) {
+        continue;
+      }
+
+      if (focused.state[WINDOW_STATE_MAXIMIZED]()) {
+        focused.unmaximize();
+      } else {
+        focused.maximize();
+      }
+      return;
+    }
+  }
+
   public refreshUsableAreaLayouts() {
     this.syncWorkspaces();
     // While a window is being interactively dragged, do not re-apply the
