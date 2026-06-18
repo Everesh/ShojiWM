@@ -39,7 +39,9 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Clock, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Scale},
+    utils::{
+        Clock, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, SERIAL_COUNTER, Scale,
+    },
     wayland::{
         background_effect::BackgroundEffectState,
         commit_timing::CommitTimingManagerState,
@@ -316,6 +318,8 @@ pub struct ShojiWM {
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
     pub runtime_input_config: RuntimeInputConfig,
+    pub runtime_applied_xkb_config: Option<crate::runtime_input::RuntimeKeyboardInputConfig>,
+    pub runtime_active_keyboard_device: Option<RuntimeInputDeviceSnapshot>,
     pub runtime_input_devices: BTreeMap<String, RuntimeInputDeviceSnapshot>,
     pub runtime_libinput_devices: HashMap<String, input::Device>,
     pub runtime_pointer_move_async_enabled: bool,
@@ -565,6 +569,18 @@ impl ShojiWM {
                 .set_focus(self, desired_focus, serial);
             self.schedule_redraw();
         }
+    }
+
+    pub fn refresh_keyboard_focus_for_keymap_change(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let Some(focus) = keyboard.current_focus() else {
+            return;
+        };
+
+        keyboard.set_focus(self, Option::<WlSurface>::None, SERIAL_COUNTER.next_serial());
+        keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
     }
 
     pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
@@ -845,6 +861,8 @@ impl ShojiWM {
             runtime_key_bindings: Vec::new(),
             runtime_window_move_modifier: None,
             runtime_input_config: Default::default(),
+            runtime_applied_xkb_config: None,
+            runtime_active_keyboard_device: None,
             runtime_input_devices: Default::default(),
             runtime_libinput_devices: Default::default(),
             runtime_pointer_move_async_enabled: false,
@@ -2030,6 +2048,11 @@ impl ShojiWM {
 
     pub fn unregister_libinput_device(&mut self, mut device: input::Device) {
         let key = libinput_device_key(&mut device);
+        if let Some(snapshot) = self.runtime_input_devices.get(&key)
+            && self.runtime_active_keyboard_device.as_ref() == Some(snapshot)
+        {
+            self.runtime_active_keyboard_device = None;
+        }
         self.runtime_input_devices.remove(&key);
         self.runtime_libinput_devices.remove(&key);
         self.decoration_evaluator
@@ -2042,11 +2065,7 @@ impl ShojiWM {
     }
 
     fn apply_runtime_input_config_to_devices(&mut self) {
-        apply_keyboard_config(
-            &self.seat,
-            &self.runtime_input_config,
-            &self.runtime_input_devices,
-        );
+        apply_keyboard_config(self);
         apply_config_to_libinput_devices(
             &self.runtime_input_config,
             &self.runtime_input_devices,
@@ -2056,6 +2075,7 @@ impl ShojiWM {
 
     pub fn apply_runtime_input_config_update(&mut self, update: RuntimeInputConfigUpdate) {
         self.runtime_input_config = update.config;
+        self.runtime_applied_xkb_config = None;
         self.apply_runtime_input_config_to_devices();
     }
 

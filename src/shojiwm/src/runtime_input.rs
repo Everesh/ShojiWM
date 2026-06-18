@@ -10,7 +10,7 @@ use smithay::{
         input::{Device as SmithayInputDevice, InputEvent},
         libinput::LibinputInputBackend,
     },
-    input::Seat,
+    input::keyboard::XkbConfig,
 };
 use tracing::warn;
 
@@ -43,6 +43,11 @@ pub struct RuntimeInputDeviceConfig {
 pub struct RuntimeKeyboardInputConfig {
     pub repeat_rate: Option<i32>,
     pub repeat_delay: Option<i32>,
+    pub rules: Option<String>,
+    pub model: Option<String>,
+    pub layout: Option<String>,
+    pub variant: Option<String>,
+    pub options: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -153,6 +158,19 @@ impl RuntimeKeyboardInputConfig {
     fn merge_from(&mut self, other: &RuntimeKeyboardInputConfig) {
         self.repeat_rate = other.repeat_rate.or(self.repeat_rate);
         self.repeat_delay = other.repeat_delay.or(self.repeat_delay);
+        self.rules = other.rules.clone().or_else(|| self.rules.clone());
+        self.model = other.model.clone().or_else(|| self.model.clone());
+        self.layout = other.layout.clone().or_else(|| self.layout.clone());
+        self.variant = other.variant.clone().or_else(|| self.variant.clone());
+        self.options = other.options.clone().or_else(|| self.options.clone());
+    }
+
+    fn has_xkb_config(&self) -> bool {
+        self.rules.is_some()
+            || self.model.is_some()
+            || self.layout.is_some()
+            || self.variant.is_some()
+            || self.options.is_some()
     }
 }
 
@@ -308,11 +326,10 @@ fn snapshot_for_backend_device<'a, D: SmithayInputDevice>(
         .find(|snapshot| snapshot.product == Some(product) && snapshot.vendor == Some(vendor))
 }
 
-pub fn apply_keyboard_config(
-    seat: &Seat<ShojiWM>,
-    config: &RuntimeInputConfig,
-    devices: &BTreeMap<String, RuntimeInputDeviceSnapshot>,
-) {
+pub fn apply_keyboard_config(state: &mut ShojiWM) {
+    let config = &state.runtime_input_config;
+    let devices = &state.runtime_input_devices;
+
     let mut keyboard = RuntimeKeyboardInputConfig::default();
     if let Some(global) = &config.global
         && let Some(global_keyboard) = &global.keyboard
@@ -325,13 +342,93 @@ pub fn apply_keyboard_config(
             keyboard.merge_from(device_keyboard);
         }
     }
-    let Some(rate) = keyboard.repeat_rate else {
-        return;
-    };
-    let delay = keyboard.repeat_delay.unwrap_or(200);
-    if let Some(handle) = seat.get_keyboard() {
+
+    if let Some(rate) = keyboard.repeat_rate
+        && let Some(handle) = state.seat.get_keyboard()
+    {
+        let delay = keyboard.repeat_delay.unwrap_or(200);
         handle.change_repeat_info(rate.max(0), delay.max(0));
     }
+
+    let active_keyboard = state
+        .runtime_active_keyboard_device
+        .as_ref()
+        .and_then(|snapshot| merged_config_for_device(config, snapshot).keyboard)
+        .filter(|keyboard| keyboard.has_xkb_config());
+
+    let global_keyboard = config
+        .global
+        .as_ref()
+        .and_then(|global| global.keyboard.as_ref())
+        .filter(|keyboard| keyboard.has_xkb_config())
+        .cloned();
+    let keyboard = active_keyboard.or(global_keyboard);
+
+    apply_keyboard_xkb_config(state, keyboard, "runtime keyboard xkb config");
+}
+
+pub fn apply_keyboard_config_for_backend_device<D: SmithayInputDevice>(
+    state: &mut ShojiWM,
+    device: &D,
+) {
+    let snapshot = snapshot_for_backend_device(&state.runtime_input_devices, device).cloned();
+    if let Some(snapshot) = &snapshot
+        && snapshot.kind.keyboard
+    {
+        state.runtime_active_keyboard_device = Some(snapshot.clone());
+    }
+    let global_keyboard = state
+        .runtime_input_config
+        .global
+        .as_ref()
+        .and_then(|global| global.keyboard.as_ref())
+        .filter(|keyboard| keyboard.has_xkb_config())
+        .cloned();
+    let keyboard = snapshot
+        .as_ref()
+        .and_then(|snapshot| keyboard_config_for_snapshot(&state.runtime_input_config, snapshot))
+        .filter(|keyboard| keyboard.has_xkb_config())
+        .or(global_keyboard);
+    apply_keyboard_xkb_config(state, keyboard, "runtime keyboard device xkb config");
+}
+
+fn apply_keyboard_xkb_config(
+    state: &mut ShojiWM,
+    keyboard: Option<RuntimeKeyboardInputConfig>,
+    log_label: &'static str,
+) {
+    if state.runtime_applied_xkb_config == keyboard {
+        return;
+    }
+    let Some(handle) = state.seat.get_keyboard() else {
+        return;
+    };
+
+    let xkb_config = keyboard.as_ref().map_or_else(XkbConfig::default, |keyboard| {
+        XkbConfig {
+            rules: keyboard.rules.as_deref().unwrap_or(""),
+            model: keyboard.model.as_deref().unwrap_or(""),
+            layout: keyboard.layout.as_deref().unwrap_or(""),
+            variant: keyboard.variant.as_deref().unwrap_or(""),
+            options: keyboard.options.clone(),
+        }
+    });
+    match handle.set_xkb_config(state, xkb_config) {
+        Ok(()) => {
+            state.runtime_applied_xkb_config = keyboard;
+            state.refresh_keyboard_focus_for_keymap_change();
+        }
+        Err(error) => {
+            warn!(?error, "{log_label}: failed to apply");
+        }
+    }
+}
+
+fn keyboard_config_for_snapshot(
+    config: &RuntimeInputConfig,
+    snapshot: &RuntimeInputDeviceSnapshot,
+) -> Option<RuntimeKeyboardInputConfig> {
+    merged_config_for_device(config, snapshot).keyboard
 }
 
 pub fn apply_config_to_libinput_devices(

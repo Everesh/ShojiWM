@@ -827,6 +827,7 @@ export interface InputDeviceKindFlags {
 }
 
 export interface InputDeviceInfo {
+  key: string;
   name: string;
   sysname?: string;
   vendor?: number;
@@ -842,6 +843,11 @@ export type InputTapButtonMap = "leftRightMiddle" | "leftMiddleRight";
 export interface KeyboardInputConfig {
   repeatRate?: number;
   repeatDelay?: number;
+  rules?: string;
+  model?: string;
+  layout?: string;
+  variant?: string;
+  options?: string;
 }
 
 export interface PointerInputConfig {

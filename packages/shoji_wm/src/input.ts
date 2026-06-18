@@ -16,8 +16,9 @@ let stagedConfigureFactory: InputConfigureFactory | null | undefined;
 let inputDeviceChangeEmitter: ((event: InputDeviceChangeEvent) => void) | null =
   null;
 
-function cloneDevice(device: InputDeviceInfo): InputDeviceInfo {
+function cloneDevice(device: InputDeviceInfo, key = device.key): InputDeviceInfo {
   return {
+    key,
     name: device.name,
     sysname: device.sysname,
     vendor: device.vendor,
@@ -30,7 +31,7 @@ function cloneInputState(
   state: Record<string, InputDeviceInfo>,
 ): Record<string, InputDeviceInfo> {
   return Object.fromEntries(
-    Object.entries(state).map(([key, device]) => [key, cloneDevice(device)]),
+    Object.entries(state).map(([key, device]) => [key, cloneDevice(device, key)]),
   );
 }
 

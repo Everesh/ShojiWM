@@ -197,6 +197,8 @@ impl ShojiWM {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => {
+                let device = event.device();
+                crate::runtime_input::apply_keyboard_config_for_backend_device(self, &device);
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let key_phase = match event.state() {

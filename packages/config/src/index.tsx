@@ -373,7 +373,7 @@ WINDOW_MANAGER.output.configure((context) => {
   return display;
 });
 
-WINDOW_MANAGER.input.configure((input, _) => {
+WINDOW_MANAGER.input.configure((input, _context) => {
   input.global = {
     touchpad: {
       tapToClick: true,
@@ -386,6 +386,17 @@ WINDOW_MANAGER.input.configure((input, _) => {
       pointerAccel: 0.0,
       accelProfile: "flat",
     },
+    keyboard: {
+      options: "caps:ctrl_modifier",
+      repeatRate: 60,
+      repeatDelay: 250,
+    }
+  };
+
+  input.device["Razer Razer Blade Keyboard"] = {
+    keyboard: {
+      layout: "us",
+    }
   };
 });
 
