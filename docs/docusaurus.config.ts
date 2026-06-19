@@ -57,6 +57,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
+          sidebarCollapsed: false,
           editUrl: 'https://github.com/bea4dev/ShojiWM/tree/main/docs/',
         },
         blog: false,
