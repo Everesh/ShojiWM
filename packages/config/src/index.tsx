@@ -231,8 +231,13 @@ COMPOSITOR.process.once("fcitx5", {
 });
 
 
+// GTK_A11Y=none disables the AT-SPI accessibility bridge for the bar. A status
+// bar never needs a screen reader, and GTK 4.22's accessibility relation
+// handling can melt down into a recursive notify storm (100% CPU) when a
+// GMenuModel-backed popover's model is destroyed while open — e.g. quitting an
+// app from its system-tray menu. Must be set before GTK init, hence here.
 COMPOSITOR.process.once("shell", {
-  command: "cd ~/.config/shoji-bar-2 && ags run app.tsx",
+  command: "cd ~/.config/shoji-bar-2 && GTK_A11Y=none ags run app.tsx",
   runPolicy: "once-per-session",
 });
 // cliphist clipboard history watchers. Text and image need separate watchers;

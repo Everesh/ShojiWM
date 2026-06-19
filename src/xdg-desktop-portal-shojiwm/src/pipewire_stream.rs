@@ -7,7 +7,7 @@
 //! is what gives us full output-refresh framerates (~65 fps on a 66 Hz panel)
 //! instead of being pinned to the PipeWire graph driver's audio quantum
 //! (~46.875 fps = 1024/48000 — the original xdpw bug, see
-//! `docs/screencast-30fps-xdpw-bug.md`).
+//! `knowledges/screencast-30fps-xdpw-bug.md`).
 //!
 //! ## Why each piece matters
 //!
