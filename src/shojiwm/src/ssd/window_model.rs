@@ -371,7 +371,7 @@ fn default_animation_channel() -> String {
     "default".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaylandLayerSnapshot {
     pub id: String,
@@ -387,7 +387,7 @@ pub struct WaylandLayerSnapshot {
     pub desired_size: LayerDesiredSizeSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerAnchorSnapshot {
     pub top: bool,
@@ -396,7 +396,7 @@ pub struct LayerAnchorSnapshot {
     pub right: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "mode", rename_all = "camelCase")]
 pub enum LayerExclusiveZoneSnapshot {
     /// Surface reserves `size` logical pixels along its anchored edge.
@@ -407,7 +407,7 @@ pub enum LayerExclusiveZoneSnapshot {
     DontCare,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayerEdgeSnapshot {
     Top,
@@ -416,7 +416,7 @@ pub enum LayerEdgeSnapshot {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerMarginSnapshot {
     pub top: i32,
@@ -425,7 +425,7 @@ pub struct LayerMarginSnapshot {
     pub left: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum KeyboardInteractivitySnapshot {
     None,
@@ -433,7 +433,7 @@ pub enum KeyboardInteractivitySnapshot {
     Exclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerDesiredSizeSnapshot {
     pub width: i32,
@@ -471,7 +471,7 @@ pub struct OutputPositionSnapshot {
     pub y: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayerPositionSnapshot {
     pub x: i32,
@@ -481,7 +481,7 @@ pub struct LayerPositionSnapshot {
 }
 
 /// What kind of surface an xdg_popup is (transitively) attached to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PopupParentKindSnapshot {
     Layer,
@@ -490,7 +490,7 @@ pub enum PopupParentKindSnapshot {
 
 /// TypeScript-facing snapshot of a mapped xdg_popup, used to evaluate
 /// per-popup effects (`WINDOW_MANAGER.effect.popup`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaylandPopupSnapshot {
     pub id: String,
@@ -502,7 +502,7 @@ pub struct WaylandPopupSnapshot {
     pub position: LayerPositionSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayerKindSnapshot {
     Background,

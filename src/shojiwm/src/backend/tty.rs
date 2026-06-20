@@ -1002,42 +1002,53 @@ fn frame_finish(
             "mpv frame debug: frame_finish"
         );
     }
-    if redraw_needed && surface.tearing_active {
-        // Async flips are commit-driven. Once the previous flip completes, submit the latest
-        // coalesced client buffer immediately instead of waiting for the event loop to finish
-        // another dispatch cycle. That extra cycle varied with client traffic and caused async
-        // flips to arrive in bursts, despite the DRM queue itself completing quickly.
+    if redraw_needed {
+        // Once a flip completes, any redraw requested while that output was pending is local to
+        // this output. Calling the global `schedule_redraw()` here re-queues every output; with
+        // multiple monitors that makes outputs continually mark each other as `redraw_needed`
+        // while they wait for vblank, creating a 120Hz-per-output idle render loop.
         //
-        // This is one half of the tearing present loop; the other half is in `queue_tty_redraws`,
-        // which makes sure a fresh commit arriving *after* an empty re-render here is not parked
-        // behind the estimated-vblank timer. Together they keep the present cadence tracking the
-        // client commit rate instead of the refresh rate.
-        match render_surface(state, loop_handle, node, crtc) {
-            Ok(RenderSurfaceOutcome::Processed) => {
-                let output_name = state
-                    .tty_backends
-                    .get(&node)
-                    .and_then(|backend| backend.surfaces.get(&crtc))
-                    .map(|surface| surface.output.name());
-                if let Some(output_name) = output_name {
-                    finish_processed_outputs(state, &[output_name]);
-                }
-            }
-            Ok(RenderSurfaceOutcome::Skipped) => state.schedule_redraw(),
-            Err(err) => {
-                warn!(
-                    ?node,
-                    ?crtc,
-                    error = ?err,
-                    "immediate tearing redraw failed; falling back to scheduled redraw"
-                );
-                state.schedule_redraw();
-            }
-        }
-    } else if redraw_needed {
-        state.schedule_redraw();
+        // Render this CRTC directly instead. This preserves the low-latency tearing path and also
+        // handles normal vblank-synced follow-up frames without waking unrelated outputs.
+        render_queued_surface_after_frame_finish(state, loop_handle, node, crtc);
     } else {
         schedule_commit_timing_timer(loop_handle, state, node, crtc);
+    }
+}
+
+fn render_queued_surface_after_frame_finish(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+    node: DrmNode,
+    crtc: crtc::Handle,
+) {
+    match render_surface(state, loop_handle, node, crtc) {
+        Ok(RenderSurfaceOutcome::Processed) => {
+            let output_name = state
+                .tty_backends
+                .get(&node)
+                .and_then(|backend| backend.surfaces.get(&crtc))
+                .map(|surface| surface.output.name());
+            if let Some(output_name) = output_name {
+                finish_processed_outputs(state, &[output_name]);
+            }
+        }
+        Ok(RenderSurfaceOutcome::Skipped) => {
+            trace!(
+                ?node,
+                ?crtc,
+                "queued tty follow-up redraw was skipped after frame_finish"
+            );
+        }
+        Err(err) => {
+            warn!(
+                ?node,
+                ?crtc,
+                error = ?err,
+                "queued tty follow-up redraw failed; falling back to scheduled redraw"
+            );
+            state.schedule_redraw();
+        }
     }
 }
 

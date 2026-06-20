@@ -6,7 +6,10 @@ use smithay::{
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, Rectangle, Size},
 };
-use std::time::{Duration, Instant};
+use std::{
+    hash::{Hash, Hasher},
+    time::{Duration, Instant},
+};
 use tracing::{debug, info, trace, warn};
 
 use crate::backend::rounded::RoundedElementState;
@@ -25,8 +28,8 @@ use super::{
     DecorationEvaluationResult, DecorationEvaluator, DecorationHandlerInvocation,
     DecorationHitTestResult, DecorationSchedulerTick, DecorationTree, LayerEffectEvaluationResult,
     LogicalPoint, LogicalRect, PopupEffectEvaluationResult, StaticDecorationEvaluator,
-    WaylandLayerSnapshot, WaylandWindowSnapshot, WindowPositionSnapshot, WindowTransform,
-    reapply_tree_preserving_layout,
+    WaylandLayerSnapshot, WaylandPopupSnapshot, WaylandWindowSnapshot, WindowEffectConfig,
+    WindowPositionSnapshot, WindowTransform, reapply_tree_preserving_layout,
     window_model::{
         ManagedWindowAnimationEasingSnapshot, ManagedWindowAnimationMode,
         ManagedWindowAnimationSnapshot, ManagedWindowPointAnimationSnapshot,
@@ -34,6 +37,12 @@ use super::{
         ManagedWindowScalarAnimationSnapshot, ManagedWindowState,
     },
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectEvaluationCacheEntry {
+    signature: u64,
+    animating: bool,
+}
 
 type BumpSharedEdgeGeometryMap<'a> =
     BumpHashMap<&'a str, SharedEdgeNodeGeometry, DefaultHashBuilder, &'a Bump>;
@@ -2001,7 +2010,27 @@ impl ShojiWM {
             .filter(|snapshot| snapshot.output_name == output_name)
             .map(|snapshot| snapshot.id.clone())
             .collect::<std::collections::HashSet<_>>();
+        let live_layer_ids = snapshots
+            .iter()
+            .map(|snapshot| snapshot.id.clone())
+            .collect::<std::collections::HashSet<_>>();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let signature = layer_effect_evaluation_signature(output_name, &snapshots);
+        let force_evaluate = self
+            .layer_effect_evaluation_cache
+            .get(output_name)
+            .is_none_or(|cache| cache.signature != signature || cache.animating);
+        if !force_evaluate {
+            retain_effect_assignments_for_live_ids(
+                &mut self.configured_layer_effects,
+                &live_layer_ids,
+            );
+            retain_effect_texture_cache_for_live_ids(
+                &mut self.layer_effect_cache,
+                &live_layer_ids,
+            );
+            return Ok(());
+        }
         let sync_started_at = Instant::now();
         self.sync_runtime_display_state();
         let sync_elapsed_ms = sync_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -2034,12 +2063,23 @@ impl ShojiWM {
         }
         let effect_count = evaluation.effects.len();
         let next_poll_in_ms = evaluation.next_poll_in_ms;
+        self.layer_effect_evaluation_cache.insert(
+            output_name.to_string(),
+            EffectEvaluationCacheEntry {
+                signature,
+                animating: next_poll_in_ms == Some(0),
+            },
+        );
         for assignment in evaluation.effects {
             if let Some(effects) = assignment.effects {
                 self.configured_layer_effects
                     .insert(assignment.layer_id, effects);
             }
         }
+        retain_effect_assignments_for_live_ids(
+            &mut self.configured_layer_effects,
+            &live_layer_ids,
+        );
         let live_layer_prefixes = snapshots
             .iter()
             .map(|snapshot| format!("{}@", snapshot.id))
@@ -2088,7 +2128,27 @@ impl ShojiWM {
             .filter(|snapshot| snapshot.output_name == output_name)
             .map(|snapshot| snapshot.id.clone())
             .collect::<std::collections::HashSet<_>>();
+        let live_popup_ids = snapshots
+            .iter()
+            .map(|snapshot| snapshot.id.clone())
+            .collect::<std::collections::HashSet<_>>();
         let now_ms = Duration::from(self.clock.now()).as_millis() as u64;
+        let signature = popup_effect_evaluation_signature(output_name, &snapshots);
+        let force_evaluate = self
+            .popup_effect_evaluation_cache
+            .get(output_name)
+            .is_none_or(|cache| cache.signature != signature || cache.animating);
+        if !force_evaluate {
+            retain_effect_assignments_for_live_ids(
+                &mut self.configured_popup_effects,
+                &live_popup_ids,
+            );
+            retain_effect_texture_cache_for_live_ids(
+                &mut self.popup_effect_cache,
+                &live_popup_ids,
+            );
+            return Ok(());
+        }
         self.sync_runtime_display_state();
         let evaluation =
             self.decoration_evaluator
@@ -2112,6 +2172,17 @@ impl ShojiWM {
                     .insert(assignment.popup_id, effects);
             }
         }
+        retain_effect_assignments_for_live_ids(
+            &mut self.configured_popup_effects,
+            &live_popup_ids,
+        );
+        self.popup_effect_evaluation_cache.insert(
+            output_name.to_string(),
+            EffectEvaluationCacheEntry {
+                signature,
+                animating: evaluation.next_poll_in_ms == Some(0),
+            },
+        );
         // Drop element-state cache entries for popups that no longer exist.
         let live_popup_prefixes = snapshots
             .iter()
@@ -2139,6 +2210,10 @@ impl ShojiWM {
         let spike_threshold_ms = animation_spike_threshold_ms();
         let force_runtime_reevaluate =
             self.runtime_poll_dirty && self.runtime_dirty_window_ids.is_empty();
+        if self.runtime_poll_dirty {
+            self.layer_effect_evaluation_cache.clear();
+            self.popup_effect_evaluation_cache.clear();
+        }
         let force_output_animation_reevaluate = target_output_name
             .is_some_and(|output_name| self.runtime_animation_outputs.contains(output_name));
         let force_async_asset_refresh = self.async_asset_dirty;
@@ -4569,6 +4644,57 @@ impl ShojiWM {
             }
         }
     }
+}
+
+fn layer_effect_evaluation_signature(
+    output_name: &str,
+    snapshots: &[WaylandLayerSnapshot],
+) -> u64 {
+    effect_evaluation_signature(output_name, snapshots, |snapshot| snapshot.id.as_str())
+}
+
+fn popup_effect_evaluation_signature(
+    output_name: &str,
+    snapshots: &[WaylandPopupSnapshot],
+) -> u64 {
+    effect_evaluation_signature(output_name, snapshots, |snapshot| snapshot.id.as_str())
+}
+
+fn effect_evaluation_signature<T, F>(output_name: &str, snapshots: &[T], id: F) -> u64
+where
+    T: Hash,
+    F: Fn(&T) -> &str,
+{
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut sorted_snapshots = snapshots.iter().collect::<Vec<_>>();
+    sorted_snapshots.sort_by(|left, right| id(left).cmp(id(right)));
+
+    output_name.hash(&mut hasher);
+    sorted_snapshots.len().hash(&mut hasher);
+    for snapshot in sorted_snapshots {
+        snapshot.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn retain_effect_assignments_for_live_ids(
+    assignments: &mut std::collections::HashMap<String, WindowEffectConfig>,
+    live_ids: &std::collections::HashSet<String>,
+) {
+    assignments.retain(|id, _| live_ids.contains(id));
+}
+
+fn retain_effect_texture_cache_for_live_ids<T>(
+    cache: &mut std::collections::HashMap<String, T>,
+    live_ids: &std::collections::HashSet<String>,
+) {
+    cache.retain(|key, _| {
+        live_ids.iter().any(|id| {
+            key.len() > id.len()
+                && key.as_bytes().get(id.len()) == Some(&b'@')
+                && key.starts_with(id)
+        })
+    });
 }
 
 fn content_clip_for_layout(

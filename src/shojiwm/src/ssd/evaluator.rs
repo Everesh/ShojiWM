@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -2284,6 +2284,7 @@ impl NodeDecorationRuntime {
         let len = u32::try_from(bytes.len()).map_err(|_| {
             DecorationEvaluationError::RuntimeProtocol("runtime request too large".into())
         })?;
+        record_runtime_protocol_request(request, bytes.len());
         match &mut self.connection {
             RuntimeConnection::Stdio { stdin, .. } => {
                 stdin.write_all(&len.to_le_bytes())?;
@@ -2316,9 +2317,17 @@ impl NodeDecorationRuntime {
             ))
         })?;
 
+        record_runtime_protocol_response(
+            value
+                .get("kind")
+                .and_then(|kind| kind.as_str())
+                .unwrap_or("<missing>"),
+            payload.len(),
+        );
+
         if let Some(env_updates) = value.get("envUpdates") {
-            let env_updates: RuntimeEnvUpdates =
-                serde_json::from_value(env_updates.clone()).map_err(|error| {
+            let env_updates: RuntimeEnvUpdates = serde_json::from_value(env_updates.clone())
+                .map_err(|error| {
                     DecorationEvaluationError::InvalidResponse(format!(
                         "invalid envUpdates: {error}; payload={}",
                         String::from_utf8_lossy(&payload)
@@ -2334,6 +2343,152 @@ impl NodeDecorationRuntime {
             ))
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RuntimeProtocolCounter {
+    count: u64,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+struct RuntimeProtocolStats {
+    last_log_at: Instant,
+    requests: std::collections::BTreeMap<String, RuntimeProtocolCounter>,
+    responses: std::collections::BTreeMap<String, RuntimeProtocolCounter>,
+    request_count: u64,
+    response_count: u64,
+    request_bytes: u64,
+    response_bytes: u64,
+}
+
+impl RuntimeProtocolStats {
+    fn new() -> Self {
+        Self {
+            last_log_at: Instant::now(),
+            requests: std::collections::BTreeMap::new(),
+            responses: std::collections::BTreeMap::new(),
+            request_count: 0,
+            response_count: 0,
+            request_bytes: 0,
+            response_bytes: 0,
+        }
+    }
+
+    fn clear_interval(&mut self, now: Instant) {
+        self.last_log_at = now;
+        self.requests.clear();
+        self.responses.clear();
+        self.request_count = 0;
+        self.response_count = 0;
+        self.request_bytes = 0;
+        self.response_bytes = 0;
+    }
+}
+
+fn runtime_protocol_stats_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SHOJI_RUNTIME_PROTOCOL_STATS")
+            .is_some_and(|value| value != "0" && value != "off" && !value.is_empty())
+    })
+}
+
+fn record_runtime_protocol_request(payload: &str, bytes: usize) {
+    if !runtime_protocol_stats_enabled() {
+        return;
+    }
+    let kind = extract_json_kind(payload).unwrap_or("<missing>");
+    record_runtime_protocol_message(RuntimeProtocolDirection::Request, kind, bytes);
+}
+
+fn record_runtime_protocol_response(kind: &str, bytes: usize) {
+    if !runtime_protocol_stats_enabled() {
+        return;
+    }
+    record_runtime_protocol_message(RuntimeProtocolDirection::Response, kind, bytes);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RuntimeProtocolDirection {
+    Request,
+    Response,
+}
+
+fn record_runtime_protocol_message(direction: RuntimeProtocolDirection, kind: &str, bytes: usize) {
+    static STATS: OnceLock<Mutex<RuntimeProtocolStats>> = OnceLock::new();
+    let stats = STATS.get_or_init(|| Mutex::new(RuntimeProtocolStats::new()));
+    let Ok(mut stats) = stats.lock() else {
+        return;
+    };
+
+    let bytes = bytes as u64;
+    match direction {
+        RuntimeProtocolDirection::Request => {
+            let counter = stats.requests.entry(kind.to_owned()).or_default();
+            counter.count = counter.count.saturating_add(1);
+            counter.bytes = counter.bytes.saturating_add(bytes);
+            stats.request_count = stats.request_count.saturating_add(1);
+            stats.request_bytes = stats.request_bytes.saturating_add(bytes);
+        }
+        RuntimeProtocolDirection::Response => {
+            let counter = stats.responses.entry(kind.to_owned()).or_default();
+            counter.count = counter.count.saturating_add(1);
+            counter.bytes = counter.bytes.saturating_add(bytes);
+            stats.response_count = stats.response_count.saturating_add(1);
+            stats.response_bytes = stats.response_bytes.saturating_add(bytes);
+        }
+    }
+
+    let now = Instant::now();
+    let interval = now.duration_since(stats.last_log_at);
+    if interval < Duration::from_secs(1) {
+        return;
+    }
+
+    let interval_ms = interval.as_secs_f64() * 1000.0;
+    let requests = summarize_runtime_protocol_counters(&stats.requests);
+    let responses = summarize_runtime_protocol_counters(&stats.responses);
+    info!(
+        interval_ms,
+        request_count = stats.request_count,
+        response_count = stats.response_count,
+        request_bytes = stats.request_bytes,
+        response_bytes = stats.response_bytes,
+        request_rate_hz = stats.request_count as f64 / interval.as_secs_f64(),
+        response_rate_hz = stats.response_count as f64 / interval.as_secs_f64(),
+        request_kib_per_s = stats.request_bytes as f64 / 1024.0 / interval.as_secs_f64(),
+        response_kib_per_s = stats.response_bytes as f64 / 1024.0 / interval.as_secs_f64(),
+        requests = ?requests,
+        responses = ?responses,
+        "runtime protocol stats"
+    );
+    stats.clear_interval(now);
+}
+
+fn summarize_runtime_protocol_counters(
+    counters: &std::collections::BTreeMap<String, RuntimeProtocolCounter>,
+) -> Vec<(String, u64, u64)> {
+    let mut summary = counters
+        .iter()
+        .map(|(kind, counter)| (kind.clone(), counter.count, counter.bytes))
+        .collect::<Vec<_>>();
+    summary.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    summary.truncate(12);
+    summary
+}
+
+fn extract_json_kind(payload: &str) -> Option<&str> {
+    let start = payload.find("\"kind\":\"")? + "\"kind\":\"".len();
+    let rest = &payload[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
 }
 
 fn runtime_environment_snapshot() -> std::collections::BTreeMap<String, String> {

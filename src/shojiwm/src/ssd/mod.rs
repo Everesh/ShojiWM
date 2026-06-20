@@ -34,7 +34,8 @@ pub use evaluator::{
     evaluate_dynamic_decoration,
 };
 pub use integration::{
-    CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, WindowDecorationState,
+    CachedDecorationBuffer, ContentClip, DecorationRuntimeEvaluator, EffectEvaluationCacheEntry,
+    WindowDecorationState,
 };
 pub use interaction::DecorationInteractionSnapshot;
 pub use window_model::{

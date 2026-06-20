@@ -52,7 +52,7 @@ import {
   installAssetResolverBridge,
   installProcessResolverBridge,
   installRuntimeHooks,
-  enterWindowDependencyScope,
+  enterWindowEffectDependencyScope,
   invokeKeyBinding,
   managedWindowOnlyDirtyIds,
   takePendingDebugConfig,
@@ -61,7 +61,7 @@ import {
   takePendingInputConfig,
   takePendingPointerConfig,
   takePendingProcessConfig,
-  leaveWindowDependencyScope,
+  leaveWindowEffectDependencyScope,
   leaveLayerDependencyScope,
   read,
   takeDirtyLayerNodeIds,
@@ -2151,13 +2151,13 @@ function evaluateWindowEffects(
     return null;
   }
 
-  enterWindowDependencyScope(windowId);
+  enterWindowEffectDependencyScope(windowId);
   try {
     return resolveSignals(
       evaluate(entry.cache.window),
     ) as WindowEffectAssignment | null;
   } finally {
-    leaveWindowDependencyScope();
+    leaveWindowEffectDependencyScope();
   }
 }
 

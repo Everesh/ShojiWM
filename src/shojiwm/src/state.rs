@@ -337,6 +337,8 @@ pub struct ShojiWM {
     pub configured_background_effect: Option<BackgroundEffectConfig>,
     pub configured_layer_effects: HashMap<String, crate::ssd::WindowEffectConfig>,
     pub configured_popup_effects: HashMap<String, crate::ssd::WindowEffectConfig>,
+    pub layer_effect_evaluation_cache: HashMap<String, crate::ssd::EffectEvaluationCacheEntry>,
+    pub popup_effect_evaluation_cache: HashMap<String, crate::ssd::EffectEvaluationCacheEntry>,
     pub config_error_report: Option<crate::config_error::ConfigErrorReport>,
     pub layer_backdrop_cache: HashMap<String, crate::backend::shader_effect::CachedBackdropTexture>,
     pub layer_framebuffer_effect_states:
@@ -874,6 +876,8 @@ impl ShojiWM {
             configured_background_effect: None,
             configured_layer_effects: HashMap::new(),
             configured_popup_effects: HashMap::new(),
+            layer_effect_evaluation_cache: HashMap::new(),
+            popup_effect_evaluation_cache: HashMap::new(),
             config_error_report,
             layer_backdrop_cache: HashMap::new(),
             layer_framebuffer_effect_states: HashMap::new(),
@@ -1349,6 +1353,8 @@ impl ShojiWM {
                 );
             }
             self.runtime_poll_dirty = true;
+            self.layer_effect_evaluation_cache.clear();
+            self.popup_effect_evaluation_cache.clear();
             self.mark_runtime_dirty_windows(tick.dirty_window_ids, tick.dirty_managed_window_ids);
             self.request_tty_maintenance("runtime-scheduler-dirty");
             self.schedule_redraw();
@@ -1565,6 +1571,8 @@ impl ShojiWM {
         self.runtime_dirty_window_ids.extend(live_window_ids);
         self.configured_layer_effects.clear();
         self.configured_popup_effects.clear();
+        self.layer_effect_evaluation_cache.clear();
+        self.popup_effect_evaluation_cache.clear();
         self.request_tty_maintenance("config-hot-reload");
         self.schedule_redraw();
         info!("hot reloaded TypeScript config");
@@ -1886,6 +1894,8 @@ impl ShojiWM {
             );
             self.output_capture_mirrors.remove(&name);
             self.runtime_animation_outputs.remove(&name);
+            self.layer_effect_evaluation_cache.remove(&name);
+            self.popup_effect_evaluation_cache.remove(&name);
             self.damage_blink_visible.remove(&name);
             self.damage_blink_pending.remove(&name);
         }

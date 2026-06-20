@@ -13,18 +13,27 @@ interface RuntimeHooks {
 
 let hooks: RuntimeHooks | null = null;
 let activeWindowDependencyScope: string | null = null;
+let activeWindowEffectDependencyScope: string | null = null;
 let activeLayerDependencyScope: string | null = null;
 let activeWindowNodeDependencyScope: string | null = null;
 let activeLayerNodeDependencyScope: string | null = null;
 let activeWindowManagedDependencyScope: string | null = null;
 const windowSignalDependencies = new WeakMap<object, Set<string>>();
+const windowEffectSignalDependencies = new WeakMap<object, Set<string>>();
 const layerSignalDependencies = new WeakMap<object, Set<string>>();
 const windowManagedSignalDependencies = new WeakMap<object, Set<string>>();
 const windowStructuralSignalDependencies = new WeakMap<object, Set<string>>();
 const layerStructuralSignalDependencies = new WeakMap<object, Set<string>>();
-const windowNodeSignalDependencies = new WeakMap<object, Map<string, Set<string>>>();
-const layerNodeSignalDependencies = new WeakMap<object, Map<string, Set<string>>>();
+const windowNodeSignalDependencies = new WeakMap<
+  object,
+  Map<string, Set<string>>
+>();
+const layerNodeSignalDependencies = new WeakMap<
+  object,
+  Map<string, Set<string>>
+>();
 const windowDependencies = new Map<string, Set<object>>();
+const windowEffectDependencies = new Map<string, Set<object>>();
 const layerDependencies = new Map<string, Set<object>>();
 const windowNodeDependencies = new Map<string, Map<string, Set<object>>>();
 const layerNodeDependencies = new Map<string, Map<string, Set<object>>>();
@@ -99,6 +108,10 @@ function ownerKeyForWindow(windowId: string): string {
   return `w:${windowId}`;
 }
 
+function ownerKeyForWindowEffect(windowId: string): string {
+  return `we:${windowId}`;
+}
+
 function ownerKeyForLayer(layerId: string): string {
   return `l:${layerId}`;
 }
@@ -135,8 +148,13 @@ let nextSuppressionId = 1;
 const ssdRebuildSuppressionStack: ActiveSSDRebuildSuppression[] = [];
 let managedWindowOnlyFastPathInvalidated = false;
 
-function debugSSD(message: string, details: Record<string, unknown> = {}): void {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+function debugSSD(
+  message: string,
+  details: Record<string, unknown> = {},
+): void {
+  const env = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env;
   if (!env?.SHOJI_SSD_SUPPRESSION_DEBUG) {
     return;
   }
@@ -152,15 +170,17 @@ function debugSSD(message: string, details: Record<string, unknown> = {}): void 
  * call site so the offending writer can be located.
  */
 const UNKNOWN_SIGNAL_DEBUG_ENABLED = (() => {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-    .process?.env;
+  const env = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env;
   const value = env?.SHOJI_SIGNAL_UNKNOWN_DEBUG;
   return value !== undefined && value !== "" && value !== "0";
 })();
 
 const UNKNOWN_SIGNAL_STACK_DEPTH = (() => {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-    .process?.env;
+  const env = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env;
   const raw = Number(env?.SHOJI_SIGNAL_UNKNOWN_DEBUG_FRAMES ?? "6");
   return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 32) : 6;
 })();
@@ -204,7 +224,9 @@ function reportUnknownSignalWrite(signal: object): void {
   );
 }
 
-function suppressionForDebug(entry: ActiveSSDRebuildSuppression): Record<string, unknown> {
+function suppressionForDebug(
+  entry: ActiveSSDRebuildSuppression,
+): Record<string, unknown> {
   return {
     id: entry.id,
     allowManagedWindowOnly: entry.allowManagedWindowOnly,
@@ -277,7 +299,9 @@ export function withSSDRebuildSuppressed<T>(
   }
 }
 
-function activeSSDRebuildSuppression(): ActiveSSDRebuildSuppression | undefined {
+function activeSSDRebuildSuppression():
+  | ActiveSSDRebuildSuppression
+  | undefined {
   return ssdRebuildSuppressionStack.at(-1);
 }
 
@@ -448,6 +472,7 @@ export function enterWindowDependencyScope(windowId: string): void {
   disposeOwnedComputeds(ownerKey);
   activeCompositionOwner = ownerKey;
   activeWindowDependencyScope = windowId;
+  activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
   activeLayerDependencyScope = null;
   activeLayerNodeDependencyScope = null;
@@ -456,8 +481,27 @@ export function enterWindowDependencyScope(windowId: string): void {
 export function leaveWindowDependencyScope(): void {
   activeCompositionOwner = null;
   activeWindowDependencyScope = null;
+  activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
   activeWindowManagedDependencyScope = null;
+}
+
+export function enterWindowEffectDependencyScope(windowId: string): void {
+  clearWindowEffectDependencies(windowId);
+  const ownerKey = ownerKeyForWindowEffect(windowId);
+  disposeOwnedComputeds(ownerKey);
+  activeCompositionOwner = ownerKey;
+  activeWindowEffectDependencyScope = windowId;
+  activeWindowDependencyScope = null;
+  activeWindowNodeDependencyScope = null;
+  activeWindowManagedDependencyScope = null;
+  activeLayerDependencyScope = null;
+  activeLayerNodeDependencyScope = null;
+}
+
+export function leaveWindowEffectDependencyScope(): void {
+  activeCompositionOwner = null;
+  activeWindowEffectDependencyScope = null;
 }
 
 export function enterLayerDependencyScope(layerId: string): void {
@@ -468,6 +512,7 @@ export function enterLayerDependencyScope(layerId: string): void {
   activeLayerDependencyScope = layerId;
   activeLayerNodeDependencyScope = null;
   activeWindowDependencyScope = null;
+  activeWindowEffectDependencyScope = null;
   activeWindowNodeDependencyScope = null;
 }
 
@@ -478,8 +523,7 @@ export function leaveLayerDependencyScope(): void {
 }
 
 export function enterWindowNodeDependencyScope(nodeId: string): void {
-  activeWindowNodeDependencyScope =
-    activeWindowDependencyScope ? nodeId : null;
+  activeWindowNodeDependencyScope = activeWindowDependencyScope ? nodeId : null;
   activeLayerNodeDependencyScope = null;
 }
 
@@ -499,8 +543,7 @@ export function leaveWindowManagedDependencyScope(): void {
 }
 
 export function enterLayerNodeDependencyScope(nodeId: string): void {
-  activeLayerNodeDependencyScope =
-    activeLayerDependencyScope ? nodeId : null;
+  activeLayerNodeDependencyScope = activeLayerDependencyScope ? nodeId : null;
   activeWindowNodeDependencyScope = null;
 }
 
@@ -510,9 +553,13 @@ export function leaveLayerNodeDependencyScope(): void {
 
 export function dropWindowDependencies(windowId: string): void {
   clearWindowDependencies(windowId);
+  clearWindowEffectDependencies(windowId);
   const ownerKey = ownerKeyForWindow(windowId);
   disposeOwnedComputeds(ownerKey);
   ownedComputedsByOwner.delete(ownerKey);
+  const effectOwnerKey = ownerKeyForWindowEffect(windowId);
+  disposeOwnedComputeds(effectOwnerKey);
+  ownedComputedsByOwner.delete(effectOwnerKey);
 }
 
 export function dropLayerDependencies(layerId: string): void {
@@ -566,7 +613,10 @@ export function isManagedWindowOnlyDirty(windowId: string): boolean {
   if (!dirtyManagedWindowIds.has(windowId)) {
     return false;
   }
-  if (windowsWithStructuralWrite.has(windowId) || dirtyWindowNodeIds.has(windowId)) {
+  if (
+    windowsWithStructuralWrite.has(windowId) ||
+    dirtyWindowNodeIds.has(windowId)
+  ) {
     return false;
   }
   return true;
@@ -607,6 +657,24 @@ export function trackSignalRead(signal: object): void {
     if (!dependencies) {
       dependencies = new Set<object>();
       windowDependencies.set(managedWindowId, dependencies);
+    }
+    dependencies.add(signal);
+    return;
+  }
+
+  const effectWindowId = activeWindowEffectDependencyScope;
+  if (effectWindowId) {
+    let dependentWindows = windowEffectSignalDependencies.get(signal);
+    if (!dependentWindows) {
+      dependentWindows = new Set<string>();
+      windowEffectSignalDependencies.set(signal, dependentWindows);
+    }
+    dependentWindows.add(effectWindowId);
+
+    let dependencies = windowEffectDependencies.get(effectWindowId);
+    if (!dependencies) {
+      dependencies = new Set<object>();
+      windowEffectDependencies.set(effectWindowId, dependencies);
     }
     dependencies.add(signal);
     return;
@@ -721,6 +789,7 @@ export function trackSignalRead(signal: object): void {
 
 export function trackSignalWrite(signal: object): void {
   const dependentWindows = windowSignalDependencies.get(signal);
+  const dependentWindowEffects = windowEffectSignalDependencies.get(signal);
   const dependentLayers = layerSignalDependencies.get(signal);
   const managedWindows = windowManagedSignalDependencies.get(signal);
   const structuralWindows = windowStructuralSignalDependencies.get(signal);
@@ -728,13 +797,18 @@ export function trackSignalWrite(signal: object): void {
   const dependentWindowNodes = windowNodeSignalDependencies.get(signal);
   const dependentLayerNodes = layerNodeSignalDependencies.get(signal);
   const hasWindowDeps = !!dependentWindows && dependentWindows.size > 0;
+  const hasWindowEffectDeps =
+    !!dependentWindowEffects && dependentWindowEffects.size > 0;
   const hasLayerDeps = !!dependentLayers && dependentLayers.size > 0;
   const hasManagedWindowDeps = !!managedWindows && managedWindows.size > 0;
-  const hasWindowNodeDeps = !!dependentWindowNodes && dependentWindowNodes.size > 0;
-  const hasLayerNodeDeps = !!dependentLayerNodes && dependentLayerNodes.size > 0;
+  const hasWindowNodeDeps =
+    !!dependentWindowNodes && dependentWindowNodes.size > 0;
+  const hasLayerNodeDeps =
+    !!dependentLayerNodes && dependentLayerNodes.size > 0;
   const suppression = activeSSDRebuildSuppression();
   if (
     !hasWindowDeps &&
+    !hasWindowEffectDeps &&
     !hasLayerDeps &&
     !hasManagedWindowDeps &&
     !hasWindowNodeDeps &&
@@ -813,9 +887,17 @@ export function trackSignalWrite(signal: object): void {
 
   if (dependentWindows) {
     for (const windowId of dependentWindows) {
-      if (suppressedWindowDirty?.has(windowId) && !managedWindows?.has(windowId)) {
+      if (
+        suppressedWindowDirty?.has(windowId) &&
+        !managedWindows?.has(windowId)
+      ) {
         continue;
       }
+      markWindowDirty(windowId);
+    }
+  }
+  if (dependentWindowEffects) {
+    for (const windowId of dependentWindowEffects) {
       markWindowDirty(windowId);
     }
   }
@@ -935,6 +1017,20 @@ function clearWindowDependencies(windowId: string): void {
     }
     windowNodeDependencies.delete(windowId);
   }
+}
+
+function clearWindowEffectDependencies(windowId: string): void {
+  const dependencies = windowEffectDependencies.get(windowId);
+  if (!dependencies) {
+    return;
+  }
+
+  for (const signal of dependencies) {
+    const dependentWindows = windowEffectSignalDependencies.get(signal);
+    dependentWindows?.delete(windowId);
+  }
+
+  windowEffectDependencies.delete(windowId);
 }
 
 function clearLayerDependencies(layerId: string): void {
