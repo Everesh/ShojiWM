@@ -727,7 +727,7 @@ export class HybridWindowManager {
       return;
     }
 
-    if (workspace?.isTiled && !workspace.shouldTile(event.window)) {
+    if (workspace) {
       this.onFloatingWindowMove(event, workspace);
       return;
     }
@@ -770,8 +770,6 @@ export class HybridWindowManager {
         stopRectAnimation(window, WINDOW_STATE_RECT);
         window.state[WINDOW_STATE_RECT].set(nextRect);
       }
-      workspace?.syncFloatingWindowRect(window, nextRect);
-
       if (event.phase === "end") {
         this.isGrabbing = false;
         this.maximizedMoveDrag = null;
@@ -792,7 +790,6 @@ export class HybridWindowManager {
       if (!snapped) {
         stopRectAnimation(window, WINDOW_STATE_RECT);
         window.state[WINDOW_STATE_RECT].set(event.currentRect);
-        workspace?.syncFloatingWindowRect(window, event.currentRect);
       }
       this.applyWorkspaceStackPolicy(workspace);
       return;
@@ -801,7 +798,6 @@ export class HybridWindowManager {
     this.updateFloatingDragSnap(event);
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(event.currentRect);
-    workspace?.syncFloatingWindowRect(window, event.currentRect);
     this.applyWorkspaceStackPolicy(workspace);
   }
 
@@ -866,6 +862,38 @@ export class HybridWindowManager {
       if (targetWorkspace !== drag.workspace) {
         drag.workspace.removeFloatingWindow(window);
         drag.workspace.applyLayout();
+        if (targetWorkspace.isTiled && targetWorkspace.shouldTile(window)) {
+          this.floatingSnap = null;
+          this.emitSnapPreview(drag.workspace.monitor, null, "floating");
+          targetWorkspace.adoptTileDragWindow(window, nextRect);
+          drag.workspace = targetWorkspace;
+          this.floatingDrag = null;
+          this.tileDrag = {
+            window,
+            workspace: targetWorkspace,
+            lastWorkspaceSwitchAt: event.timestamp,
+          };
+          this.syncWorkspaceVisibility();
+          targetWorkspace.updateTileDrag(
+            window,
+            nextRect,
+            event.currentPointer.x,
+          );
+          this.emitSnapPreview(
+            targetWorkspace.monitor,
+            targetWorkspace.draggingSlotRect(),
+            "tiling",
+          );
+          this.applyWorkspaceStackPolicy(targetWorkspace);
+          if (event.phase === "end") {
+            targetWorkspace.endTileDrag(window, false);
+            this.tileDrag = null;
+            this.maximizedMoveDrag = null;
+            this.isGrabbing = false;
+          }
+          window.focus();
+          return;
+        }
         targetWorkspace.adoptFloatingWindow(window, nextRect);
         drag.workspace = targetWorkspace;
         this.syncWorkspaceVisibility();
@@ -927,6 +955,21 @@ export class HybridWindowManager {
     if (targetWorkspace !== drag.workspace) {
       drag.workspace.removeTileDragWindow(window);
       drag.workspace.applyLayout();
+      if (!targetWorkspace.isTiled || !targetWorkspace.shouldTile(window)) {
+        this.emitSnapPreview(drag.workspace.monitor, null, "tiling");
+        window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
+        targetWorkspace.adoptFloatingWindow(window, event.currentRect);
+        this.tileDrag = null;
+        this.floatingDrag = {
+          window,
+          workspace: targetWorkspace,
+          lastWorkspaceSwitchAt: event.timestamp,
+        };
+        this.syncWorkspaceVisibility();
+        this.applyWorkspaceStackPolicy(targetWorkspace);
+        this.updateFloatingDragSnap(event);
+        return;
+      }
       targetWorkspace.adoptTileDragWindow(window, event.currentRect);
       drag.workspace = targetWorkspace;
       this.syncWorkspaceVisibility();
@@ -1502,7 +1545,7 @@ export class HybridWindowManager {
         index,
         monitor,
         this.naturalRootRect,
-        (window) => this.maximizedRectForWindow(window),
+        (window) => this.maximizedRectForWindow(window, monitor),
         (monitor) => this.getActiveWorkspaceIndex(monitor),
       );
       this.workspaces.set(key, workspace);
@@ -2012,12 +2055,17 @@ export class HybridWindowManager {
     };
   }
 
-  private maximizedRectForWindow(window: WaylandWindow): ManagedWindowRect {
+  private maximizedRectForWindow(
+    window: WaylandWindow,
+    preferredOutput?: string,
+  ): ManagedWindowRect {
     const rect = window.state[WINDOW_STATE_RECT]();
     const centerX = read(rect.x) + read(rect.width) / 2;
     const centerY = read(rect.y) + read(rect.height) / 2;
     const outputName =
-      this.outputNameAt(centerX, centerY) ?? this.currentMonitor;
+      preferredOutput ??
+      this.outputNameAt(centerX, centerY) ??
+      this.currentMonitor;
     const output = outputName
       ? COMPOSITOR.output.current[outputName]
       : undefined;
@@ -3409,10 +3457,11 @@ export class Workspace {
       this.windows.push(window);
     }
     const visible = this.isActive();
+    this.activeWindowId = window.id;
     this.syncWindowVisibleOutputs(window);
     resetWorkspaceVisualState(window, visible);
     window.state[WINDOW_STATE_FLOATING_RECT].set(
-      this.viewportRectToFloatingContentRect(rect),
+      this.isTiled ? this.viewportRectToFloatingContentRect(rect) : rect,
     );
     stopRectAnimation(window, WINDOW_STATE_RECT);
     window.state[WINDOW_STATE_RECT].set(rect);
@@ -3743,9 +3792,7 @@ export class Workspace {
   private syncWindowVisibleOutputs(window: WaylandWindow) {
     window.state[WINDOW_STATE_TILED].set(this.isTiled && this.shouldTile(window));
     window.state[WINDOW_STATE_VISIBLE_OUTPUTS].set(
-      this.isTiled && !window.state[WINDOW_STATE_TILE_DRAGGING]()
-        ? [this.monitor]
-        : null,
+      this.isTiled ? [this.monitor] : null,
     );
   }
 
@@ -3772,7 +3819,11 @@ export class Workspace {
     window: WaylandWindow,
     viewportRect: ManagedWindowRect,
   ) {
-    if (!this.isTiled || this.shouldTile(window)) {
+    if (!this.isTiled) {
+      window.state[WINDOW_STATE_FLOATING_RECT].set(viewportRect);
+      return;
+    }
+    if (this.shouldTile(window)) {
       return;
     }
     window.state[WINDOW_STATE_FLOATING_RECT].set(

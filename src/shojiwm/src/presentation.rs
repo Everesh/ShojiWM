@@ -369,6 +369,20 @@ pub fn take_presentation_feedback(
 }
 
 impl ShojiWM {
+    fn window_frame_processing_applies_to_output(&self, window: &Window, output: &Output) -> bool {
+        if !self.window_allows_render(window) {
+            return false;
+        }
+
+        if let Some(decoration) = self.window_decorations.get(window)
+            && decoration.managed_window.managed
+        {
+            return decoration.managed_window_allows_render_on_output(output.name().as_str());
+        }
+
+        self.space.outputs_for_element(window).contains(output)
+    }
+
     fn log_mpv_pending_surface_callbacks(
         &self,
         output: &Output,
@@ -385,7 +399,7 @@ impl ShojiWM {
                 return;
             };
             if decoration.snapshot.app_id.as_deref() != Some("mpv")
-                || !self.space.outputs_for_element(window).contains(output)
+                || !self.window_frame_processing_applies_to_output(window, output)
             {
                 return;
             }
@@ -464,10 +478,7 @@ impl ShojiWM {
             };
 
         self.space.elements().for_each(|window| {
-            if !self.window_allows_render(window) {
-                return;
-            }
-            if self.space.outputs_for_element(window).contains(output) {
+            if self.window_frame_processing_applies_to_output(window, output) {
                 window.send_frame(output, time, throttle, &should_send);
             }
         });
@@ -552,10 +563,7 @@ impl ShojiWM {
             };
 
         self.space.elements().for_each(|window| {
-            if !self.window_allows_render(window) {
-                return;
-            }
-            if self.space.outputs_for_element(window).contains(output) {
+            if self.window_frame_processing_applies_to_output(window, output) {
                 window.send_frame(output, time, throttle, &should_send);
             }
         });
@@ -595,10 +603,7 @@ impl ShojiWM {
         let debug_fifo = fifo_debug_enabled();
         let debug_mpv = mpv_frame_debug_enabled();
         self.space.elements().for_each(|window| {
-            if !self.window_allows_render(window) {
-                return;
-            }
-            if !self.space.outputs_for_element(window).contains(output) {
+            if !self.window_frame_processing_applies_to_output(window, output) {
                 return;
             }
 
@@ -680,10 +685,7 @@ impl ShojiWM {
         let mut next_deadline: Option<Duration> = None;
 
         self.space.elements().for_each(|window| {
-            if !self.window_allows_render(window) {
-                return;
-            }
-            if !self.space.outputs_for_element(window).contains(output) {
+            if !self.window_frame_processing_applies_to_output(window, output) {
                 return;
             }
 
@@ -743,10 +745,7 @@ impl ShojiWM {
         let debug_fifo = fifo_debug_enabled();
         let debug_mpv = mpv_frame_debug_enabled();
         self.space.elements().for_each(|window| {
-            if !self.window_allows_render(window) {
-                return;
-            }
-            if self.space.outputs_for_element(window).contains(output) {
+            if self.window_frame_processing_applies_to_output(window, output) {
                 let app_id = window
                     .toplevel()
                     .and_then(|t| {
