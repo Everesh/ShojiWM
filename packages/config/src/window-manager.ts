@@ -865,8 +865,7 @@ export class HybridWindowManager {
         drag.workspace.removeFloatingWindow(window);
         drag.workspace.applyLayout();
         if (targetWorkspace.isTiled && targetWorkspace.shouldTile(window)) {
-          this.floatingSnap = null;
-          this.emitSnapPreview(drag.workspace.monitor, null, "floating");
+          this.clearFloatingSnapPreview();
           targetWorkspace.adoptTileDragWindow(window, nextRect);
           drag.workspace = targetWorkspace;
           this.floatingDrag = null;
@@ -955,10 +954,10 @@ export class HybridWindowManager {
 
     let targetWorkspace = this.workspaceForTileDrag(event, drag);
     if (targetWorkspace !== drag.workspace) {
+      this.emitSnapPreview(drag.workspace.monitor, null, "tiling");
       drag.workspace.removeTileDragWindow(window);
       drag.workspace.applyLayout();
       if (!targetWorkspace.isTiled || !targetWorkspace.shouldTile(window)) {
-        this.emitSnapPreview(drag.workspace.monitor, null, "tiling");
         window.state[WINDOW_STATE_TILE_DRAGGING].set(false);
         targetWorkspace.adoptFloatingWindow(window, event.currentRect);
         this.tileDrag = null;
@@ -2698,7 +2697,7 @@ export class HybridWindowManager {
   /** Update the floating-drag snap candidate + preview during a move. */
   private updateFloatingDragSnap(event: WindowMoveEvent) {
     if (event.phase === "start") {
-      this.floatingSnap = null;
+      this.clearFloatingSnapPreview();
       return;
     }
     if (event.phase === "end" || event.phase === "cancel") {
@@ -2719,19 +2718,32 @@ export class HybridWindowManager {
       : null;
 
     if (!monitor || !zone) {
-      if (this.floatingSnap) {
-        this.emitSnapPreview(this.floatingSnap.monitor, null, "floating");
-        this.floatingSnap = null;
-      }
+      this.clearFloatingSnapPreview();
       return;
     }
 
     const rect = this.snapZoneRect(monitor, zone);
     if (!rect) {
+      this.clearFloatingSnapPreview();
       return;
+    }
+    if (
+      this.floatingSnap &&
+      (this.floatingSnap.windowId !== event.window.id ||
+        this.floatingSnap.monitor !== monitor)
+    ) {
+      this.emitSnapPreview(this.floatingSnap.monitor, null, "floating");
     }
     this.floatingSnap = { windowId: event.window.id, monitor, zone, rect };
     this.emitSnapPreview(monitor, rect, "floating");
+  }
+
+  private clearFloatingSnapPreview() {
+    if (!this.floatingSnap) {
+      return;
+    }
+    this.emitSnapPreview(this.floatingSnap.monitor, null, "floating");
+    this.floatingSnap = null;
   }
 
   /**
@@ -3223,6 +3235,9 @@ export class Workspace {
     this.isTiled = tiled;
     if (tiled) {
       this.scrollOffset = 0;
+      for (const window of this.windows) {
+        this.syncWindowVisibleOutputs(window);
+      }
       for (const window of this.tileableWindows()) {
         this.captureFloatingRect(window);
         this.setTileWidthFromRect(
