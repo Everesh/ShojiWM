@@ -19,9 +19,31 @@ official release**. Until then, install from source as described below.
 - A Linux system with a working Wayland / DRM setup
 - A recent Rust toolchain (`cargo`)
 - Node.js 18 or newer (with `npm`)
+- The following native libraries (with their development headers), which ShojiWM
+  links against:
+  - `libwayland`
+  - `libxkbcommon`
+  - `libudev`
+  - `libinput`
+  - `libgbm`
+  - `libseat`
+  - `xwayland` — the Xwayland server itself (driven by `xwayland-satellite` below)
 - [`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) — for
   running X11 / Xwayland applications (see the note below)
 - `sudo` — the installer copies files into `/usr` and registers the session
+
+:::note[Installing the native libraries]
+Package names vary by distribution. For example:
+
+```bash
+# Debian / Ubuntu
+sudo apt install libwayland-dev libxkbcommon-dev libudev-dev libinput-dev \
+  libgbm-dev libseat-dev xwayland
+
+# Arch Linux
+sudo pacman -S wayland libxkbcommon systemd-libs libinput mesa seatd xorg-xwayland
+```
+:::
 
 :::note[xwayland-satellite is required]
 ShojiWM uses `xwayland-satellite` to run X11 applications. The recommended way to
