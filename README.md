@@ -1,5 +1,5 @@
 <div align="center">
-<h2>ShojiWM (WIP)</h2>
+<h2>ShojiWM</h2>
 <p>A highly customizable Wayland compositor configured with TypeScript/TSX.</p>
 
 <a href="https://discord.gg/NheBbu3FX6" data-size="large">
