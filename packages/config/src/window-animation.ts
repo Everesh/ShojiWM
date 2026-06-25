@@ -71,7 +71,7 @@ export function playRectAnimation(
     // an older animated rect for a frame. Treat rect animation requests as
     // idempotent at the declarative target level.
     const previousTarget = lastRectTarget(window, windowRectState);
-    if (previousTarget && sameRect(previousTarget, target) && sameRect(from, target)) {
+    if (previousTarget && sameRect(previousTarget, target)) {
         return;
     }
 

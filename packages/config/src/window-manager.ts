@@ -360,6 +360,7 @@ export class HybridWindowManager {
   // Tracks MRU focus time per window id so the dock can pick "the most recent
   // window of an app" deterministically. Updated by recordFocus().
   private readonly lastFocusedAt = new Map<string, number>();
+  private readonly pendingInitialFocusByWindowId = new Map<string, number>();
   private currentMonitor: string;
   private isGrabbing = false;
   private tileDrag: {
@@ -631,6 +632,13 @@ export class HybridWindowManager {
       this.findWorkspaceRestoringWindow(window) ?? this.getCurrentWorkspace();
     if (workspace) {
       restoredExistingWindow = workspace.addWindow(window);
+      if (
+        !restoredExistingWindow &&
+        workspace.isTiled &&
+        workspace.shouldTile(window)
+      ) {
+        this.trackPendingInitialFocus(window);
+      }
       this.applyWorkspaceStackPolicy(workspace);
       this.syncWorkspaceVisibility();
     } else {
@@ -686,6 +694,10 @@ export class HybridWindowManager {
     if (focused) {
       this.windowStack.raise(window);
       const workspace = this.findWorkspaceForWindow(window);
+      if (this.shouldDeferFocusLayoutForInitialOpen(window, workspace)) {
+        this.applyWorkspaceStackPolicy(workspace);
+        return;
+      }
       if (workspace?.isTiled && workspace.isActive()) {
         workspace.focusWindow(window);
         this.applyWorkspaceStackPolicy(workspace);
@@ -1098,7 +1110,9 @@ export class HybridWindowManager {
     if (workspace) {
       // If the window is on another workspace, switch with the same
       // slide/fade animation as keyboard/gesture switching (no-op if same).
-      this.switchWorkspaceTo(workspace.monitor, workspace.index);
+      this.switchWorkspaceTo(workspace.monitor, workspace.index, {
+        focusActiveAfter: false,
+      });
     }
     // Focus the target window after switching (overrides switchWorkspaceTo's focusActiveWindow).
     event.window.focus();
@@ -1389,6 +1403,37 @@ export class HybridWindowManager {
    */
   public recordFocus(windowId: string) {
     this.lastFocusedAt.set(windowId, Date.now());
+  }
+
+  private trackPendingInitialFocus(window: WaylandWindow) {
+    const token = Date.now();
+    this.pendingInitialFocusByWindowId.set(window.id, token);
+    setTimeout(() => {
+      if (this.pendingInitialFocusByWindowId.get(window.id) === token) {
+        this.pendingInitialFocusByWindowId.delete(window.id);
+      }
+    }, WINDOW_MANAGEMENT_ANIMATION_DURATION);
+  }
+
+  private shouldDeferFocusLayoutForInitialOpen(
+    window: WaylandWindow,
+    workspace: Workspace | undefined,
+  ): boolean {
+    if (!workspace?.isTiled || !workspace.isActive()) {
+      return false;
+    }
+    if (this.pendingInitialFocusByWindowId.delete(window.id)) {
+      return false;
+    }
+    for (const pendingWindowId of this.pendingInitialFocusByWindowId.keys()) {
+      if (
+        workspace.isActiveWindowId(pendingWindowId) &&
+        workspace.findWindowById(pendingWindowId)
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -2846,6 +2891,7 @@ export class Workspace {
   // Layout slot reserved for the tile being dragged (the gap opened in the row).
   // Captured during applyLayout so the bar can preview where the tile will land.
   private lastDraggingSlotRect: ManagedWindowRect | null = null;
+  private lastAppliedTileViewportRect: ManagedWindowRect | null = null;
   private scrollOffset = 0;
   private kineticScrollPoll: PollHandle | null = null;
   private kineticScrollToken = 0;
@@ -3043,6 +3089,10 @@ export class Workspace {
     return this.windows.find((window) => window.id === windowId);
   }
 
+  public isActiveWindowId(windowId: string): boolean {
+    return this.activeWindowId === windowId;
+  }
+
   public moveFocusedTile(direction: -1 | 1): boolean {
     if (!this.isTiled) {
       return false;
@@ -3109,6 +3159,13 @@ export class Workspace {
     }
 
     if (this.isTiled) {
+      const nextViewportRect = this.tileViewportRect();
+      if (
+        this.lastAppliedTileViewportRect &&
+        managedRectEquals(this.lastAppliedTileViewportRect, nextViewportRect)
+      ) {
+        return;
+      }
       this.applyLayout({
         suppressSSDRebuild: false,
         animate: false,
@@ -3356,6 +3413,7 @@ export class Workspace {
     this.clampScrollOffset(tileable.length);
 
     const viewportRect = this.tileViewportRect();
+    this.lastAppliedTileViewportRect = snapshotManagedRect(viewportRect);
     const tileHeight = read(viewportRect.height);
     let nextX = read(viewportRect.x) - this.scrollOffset;
     const appliedRects: Record<string, ManagedWindowRect> = {};
@@ -4305,6 +4363,27 @@ function insetRect(
     width,
     height,
   };
+}
+
+function snapshotManagedRect(rect: ManagedWindowRect): ManagedWindowRect {
+  return {
+    x: read(rect.x),
+    y: read(rect.y),
+    width: read(rect.width),
+    height: read(rect.height),
+  };
+}
+
+function managedRectEquals(
+  a: ManagedWindowRect,
+  b: ManagedWindowRect,
+): boolean {
+  return (
+    read(a.x) === read(b.x) &&
+    read(a.y) === read(b.y) &&
+    read(a.width) === read(b.width) &&
+    read(a.height) === read(b.height)
+  );
 }
 
 function isLayoutSnapZone(zone: SnapZone | null): zone is LayoutSnapZone {
