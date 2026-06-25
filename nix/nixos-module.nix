@@ -14,6 +14,7 @@ let
   defaultXwayland = pkgs.xwayland or (pkgs.xorg.xwayland or null);
   defaultSatellite = pkgs.xwayland-satellite or null;
   gtkPortal = pkgs.xdg-desktop-portal-gtk or null;
+  initConfigUsers = cfg.initConfig.users;
 
   shojiPackage =
     if cfg.package ? override then
@@ -46,6 +47,23 @@ in
       type = lib.types.bool;
       default = true;
       description = "Whether to install xdg-desktop-portal-gtk as the fallback portal backend.";
+    };
+
+    initConfig.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to initialize ShojiWM TypeScript config for selected users
+        during system activation. Existing src/index.tsx files are kept, while
+        the shoji_wm package symlink is refreshed on every activation.
+      '';
+    };
+
+    initConfig.users = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "bea4dev" ];
+      description = "Users whose ~/.config/shojiwm directory should be initialized.";
     };
 
     xwaylandSatellite.enable = lib.mkOption {
@@ -82,6 +100,24 @@ in
           is not available in this nixpkgs. Disable gtkFallback or provide a newer nixpkgs.
         '';
       }
+      {
+        assertion = !cfg.initConfig.enable || initConfigUsers != [ ];
+        message = ''
+          programs.shojiwm.initConfig.enable is true, but initConfig.users is empty.
+          Set programs.shojiwm.initConfig.users to the user accounts that should
+          receive ~/.config/shojiwm.
+        '';
+      }
+      {
+        assertion =
+          !cfg.initConfig.enable
+          || lib.all (user: builtins.hasAttr user config.users.users) initConfigUsers;
+        message = ''
+          programs.shojiwm.initConfig.users contains a user that is not declared
+          in users.users. Declare the user in users.users or remove it from the
+          initConfig.users list.
+        '';
+      }
     ];
 
     environment.systemPackages =
@@ -96,6 +132,30 @@ in
     services.displayManager.sessionPackages = [ shojiPackage ];
 
     hardware.graphics.enable = true;
+
+    system.activationScripts.shojiwm-init-config = lib.mkIf cfg.initConfig.enable (
+      lib.stringAfter [ "users" ] (
+        lib.concatMapStringsSep "\n" (
+          user:
+          let
+            userConfig = config.users.users.${user};
+            home = userConfig.home or "/home/${user}";
+            group = userConfig.group or "users";
+            quotedUser = lib.escapeShellArg user;
+            quotedGroup = lib.escapeShellArg group;
+            quotedHome = lib.escapeShellArg home;
+            quotedConfigHome = lib.escapeShellArg "${home}/.config";
+          in
+          ''
+            echo "initializing ShojiWM config for ${user}"
+            install -d -m 0755 -o ${quotedUser} -g ${quotedGroup} ${quotedHome}
+            ${pkgs.util-linux}/bin/runuser -u ${quotedUser} -- \
+              env HOME=${quotedHome} XDG_CONFIG_HOME=${quotedConfigHome} \
+              ${shojiPackage}/bin/shojiwm-init-config
+          ''
+        ) initConfigUsers
+      )
+    );
 
     xdg.portal = lib.mkIf cfg.portal.enable {
       enable = true;

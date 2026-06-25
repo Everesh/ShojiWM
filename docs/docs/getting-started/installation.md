@@ -189,6 +189,24 @@ This creates `~/.config/shojiwm` if it does not already exist, and links
 `~/.config/shojiwm/node_modules/shoji_wm` to the package in the Nix store. Your
 config remains writable and can still be hot-reloaded.
 
+Alternatively, the NixOS module can initialize selected users automatically
+during system activation:
+
+```nix
+{
+  programs.shojiwm = {
+    enable = true;
+    initConfig = {
+      enable = true;
+      users = [ "your-user" ];
+    };
+  };
+}
+```
+
+This keeps an existing `src/index.tsx`, but refreshes the
+`node_modules/shoji_wm` symlink whenever the system is rebuilt.
+
 ### xwayland-satellite fork
 
 If you need the ShojiWM-specific `xwayland-satellite` fork, override the package

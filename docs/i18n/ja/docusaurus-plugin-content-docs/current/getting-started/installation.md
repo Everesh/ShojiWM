@@ -188,6 +188,24 @@ nix run github:bea4dev/ShojiWM#init-config
 `~/.config/shojiwm/node_modules/shoji_wm` が Nix store 内の package へリンクされます。
 設定ファイル自体は書き換え可能なままなので、ホットリロードも使えます。
 
+また、NixOS module から指定ユーザーの設定を自動初期化することもできます。
+
+```nix
+{
+  programs.shojiwm = {
+    enable = true;
+    initConfig = {
+      enable = true;
+      users = [ "your-user" ];
+    };
+  };
+}
+```
+
+この場合も既存の `src/index.tsx` は保持されます。一方で
+`node_modules/shoji_wm` の symlink は system rebuild のたびに最新の Nix store path へ
+張り替えられます。
+
 ### xwayland-satellite fork
 
 ShojiWM 向けの `xwayland-satellite` fork が必要な場合は、NixOS module の package option
