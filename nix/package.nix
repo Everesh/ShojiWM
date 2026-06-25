@@ -8,6 +8,7 @@
   llvmPackages,
   libclang ? llvmPackages.libclang,
   pkg-config,
+  bash,
   nodejs_22,
   wayland,
   wayland-protocols,
@@ -231,7 +232,7 @@ EOF
     cp -R packages/config/. "$out/share/shojiwm/default-config/"
 
     install -Dm755 /dev/stdin "$out/bin/shojiwm-init-config" <<EOF
-#!/usr/bin/env bash
+#!${bash}/bin/bash
 set -euo pipefail
 
 config_home="\''${XDG_CONFIG_HOME:-\''${HOME:?HOME is not set}/.config}"
