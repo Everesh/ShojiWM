@@ -294,4 +294,6 @@ EOF
     platforms = lib.platforms.linux;
     mainProgram = "shoji_wm";
   };
+
+  passthru.providedSessions = [ "shojiwm" ];
 }
