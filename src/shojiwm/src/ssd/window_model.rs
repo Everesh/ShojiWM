@@ -215,6 +215,7 @@ pub struct WindowMoveEventSnapshot {
     pub start_rect: WindowPositionSnapshot,
     pub current_rect: WindowPositionSnapshot,
     pub output_name: Option<String>,
+    pub modifiers: PointerModifierStateSnapshot,
     pub timestamp: u64,
 }
 

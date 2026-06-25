@@ -123,6 +123,7 @@ export interface WindowMoveEvent {
   startRect: WindowMoveRect;
   currentRect: WindowMoveRect;
   outputName?: string;
+  modifiers: PointerModifierState;
   timestamp: number;
 }
 

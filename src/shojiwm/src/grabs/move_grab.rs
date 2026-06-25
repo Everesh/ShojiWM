@@ -5,8 +5,9 @@
 
 use crate::{
     ssd::{
-        LogicalRect, WindowMoveEventSnapshot, WindowMovePhaseSnapshot, WindowMoveSourceSnapshot,
-        WindowPositionSnapshot, WindowResizePointSnapshot,
+        LogicalRect, PointerModifierStateSnapshot, WindowMoveEventSnapshot,
+        WindowMovePhaseSnapshot, WindowMoveSourceSnapshot, WindowPositionSnapshot,
+        WindowResizePointSnapshot,
     },
     state::ShojiWM,
 };
@@ -103,6 +104,12 @@ impl MoveSurfaceGrab {
             start_rect: rect_snapshot(self.initial_event_rect),
             current_rect: rect_snapshot(current_rect),
             output_name,
+            modifiers: PointerModifierStateSnapshot {
+                logo: data.current_keyboard_modifiers.logo,
+                alt: data.current_keyboard_modifiers.alt,
+                ctrl: data.current_keyboard_modifiers.ctrl,
+                shift: data.current_keyboard_modifiers.shift,
+            },
             timestamp: std::time::Duration::from(data.clock.now()).as_millis() as u64,
         }
     }

@@ -1916,6 +1916,7 @@ export class HybridWindowManager {
     );
 
     if (
+      event.modifiers.shift &&
       edgeDirection !== 0 &&
       event.timestamp - drag.lastWorkspaceSwitchAt >=
         TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS
@@ -1947,6 +1948,7 @@ export class HybridWindowManager {
     );
 
     if (
+      event.modifiers.shift &&
       edgeDirection !== 0 &&
       event.timestamp - drag.lastWorkspaceSwitchAt >=
         TILE_DRAG_WORKSPACE_SWITCH_INTERVAL_MS
@@ -2696,6 +2698,10 @@ export class HybridWindowManager {
 
   /** Update the floating-drag snap candidate + preview during a move. */
   private updateFloatingDragSnap(event: WindowMoveEvent) {
+    if (event.modifiers.shift) {
+      this.clearFloatingSnapPreview();
+      return;
+    }
     if (event.phase === "start") {
       this.clearFloatingSnapPreview();
       return;
@@ -2754,6 +2760,10 @@ export class HybridWindowManager {
     event: WindowMoveEvent,
     workspace: Workspace | undefined,
   ): boolean {
+    if (event.modifiers.shift) {
+      this.clearFloatingSnapPreview();
+      return false;
+    }
     const snap = this.floatingSnap;
     this.floatingSnap = null;
     if (!snap || snap.windowId !== event.window.id) {
