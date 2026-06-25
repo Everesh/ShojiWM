@@ -166,18 +166,22 @@ rustPlatform.buildRustPackage {
     mkdir -p "$out/lib"
     ln -s "${runtime}/lib/shojiwm" "$out/lib/shojiwm"
 
-    makeWrapper "$out/bin/.shoji_wm-unwrapped" "$out/bin/shoji_wm" \
-      --set-default SHOJI_RUNTIME_DIR "$out/lib/shojiwm" \
-      --set-default SHOJI_TSX "$out/lib/shojiwm/node_modules/.bin/tsx" \
-      --prefix PATH : "${lib.makeBinPath runtimeBinPath}" \
-      --prefix LD_LIBRARY_PATH : "${runtimeLibraryPath}" \
-      --suffix GBM_BACKENDS_PATH : "${gbmBackendsPath}" \
-      --suffix LIBGL_DRIVERS_PATH : "${driDriversPath}" \
-      --suffix __EGL_VENDOR_LIBRARY_DIRS : "${eglVendorLibraryDirs}" \
-      ${lib.optionalString (xwaylandSatellite != null) ''
-        --set-default SHOJI_XWAYLAND_SATELLITE_PATH "${xwaylandSatellite}/bin/xwayland-satellite" \
-      ''}
+    shoji_wrapper_args=(
+      --set-default SHOJI_RUNTIME_DIR "$out/lib/shojiwm"
+      --set-default SHOJI_TSX "$out/lib/shojiwm/node_modules/.bin/tsx"
+      --prefix PATH : "${lib.makeBinPath runtimeBinPath}"
+      --prefix LD_LIBRARY_PATH : "${runtimeLibraryPath}"
+      --suffix GBM_BACKENDS_PATH : "${gbmBackendsPath}"
+      --suffix LIBGL_DRIVERS_PATH : "${driDriversPath}"
+      --suffix __EGL_VENDOR_LIBRARY_DIRS : "${eglVendorLibraryDirs}"
       --set-default SHOJI_DECORATION_RUNTIME "$out/lib/shojiwm/tools/decoration-runtime.ts"
+    )
+    ${lib.optionalString (xwaylandSatellite != null) ''
+      shoji_wrapper_args+=(
+        --set-default SHOJI_XWAYLAND_SATELLITE_PATH "${xwaylandSatellite}/bin/xwayland-satellite"
+      )
+    ''}
+    makeWrapper "$out/bin/.shoji_wm-unwrapped" "$out/bin/shoji_wm" "''${shoji_wrapper_args[@]}"
 
     wrapProgram "$out/bin/xdg-desktop-portal-shojiwm" \
       --prefix LD_LIBRARY_PATH : "${runtimeLibraryPath}" \
