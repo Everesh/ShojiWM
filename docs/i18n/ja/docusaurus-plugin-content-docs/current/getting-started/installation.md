@@ -156,7 +156,13 @@ ShojiWM を flake input に追加します。
       modules = [
         shojiwm.nixosModules.default
         {
-          programs.shojiwm.enable = true;
+          programs.shojiwm = {
+            enable = true;
+            initConfig = {
+              enable = true;
+              users = [ "your-user" ];
+            };
+          };
         }
       ];
     };
@@ -178,7 +184,21 @@ module は次をインストールします。
 - スクリーンキャプチャ用の ShojiWM portal 設定
 - nixpkgs に存在する場合は `xwayland-satellite`
 
-編集可能な TypeScript 設定は一度だけ初期化します。
+`programs.shojiwm.initConfig.enable = true` を設定すると、module は system
+activation 時に指定ユーザーの ShojiWM TypeScript 設定ディレクトリを初期化します。
+デフォルト config 一式は `src/index.tsx` がまだ存在しない場合にだけコピーされます。
+既存の `src/index.tsx` や `src/window-manager.ts` などのユーザー設定ファイルは保持されます。
+一方で、次の生成済みサポートファイルは rebuild のたびに同期されます。
+
+- 現在の Nix store package を指す `node_modules/shoji_wm`
+- `package.json`
+- `tsconfig.json`
+
+これらの同期は重要です。TypeScript runtime は TSX/JSX 変換に `tsconfig.json` を使い、
+型と runtime import の解決に `shoji_wm` package link を使います。
+
+NixOS module に config directory を管理させたくない場合は `initConfig` を省略し、
+編集可能な TypeScript 設定を手動で初期化します。
 
 ```bash
 nix run github:bea4dev/ShojiWM#init-config
@@ -187,24 +207,6 @@ nix run github:bea4dev/ShojiWM#init-config
 これにより、存在しない場合は `~/.config/shojiwm` が作成され、
 `~/.config/shojiwm/node_modules/shoji_wm` が Nix store 内の package へリンクされます。
 設定ファイル自体は書き換え可能なままなので、ホットリロードも使えます。
-
-また、NixOS module から指定ユーザーの設定を自動初期化することもできます。
-
-```nix
-{
-  programs.shojiwm = {
-    enable = true;
-    initConfig = {
-      enable = true;
-      users = [ "your-user" ];
-    };
-  };
-}
-```
-
-この場合も既存の `src/index.tsx` は保持されます。一方で
-`node_modules/shoji_wm` の symlink は system rebuild のたびに最新の Nix store path へ
-張り替えられます。
 
 ### xwayland-satellite fork
 

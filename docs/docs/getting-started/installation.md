@@ -157,7 +157,13 @@ Add ShojiWM as a flake input:
       modules = [
         shojiwm.nixosModules.default
         {
-          programs.shojiwm.enable = true;
+          programs.shojiwm = {
+            enable = true;
+            initConfig = {
+              enable = true;
+              users = [ "your-user" ];
+            };
+          };
         }
       ];
     };
@@ -179,7 +185,23 @@ The module installs:
 - the ShojiWM portal preference for screen capture
 - `xwayland-satellite`, when available from your nixpkgs
 
-Initialize the editable TypeScript config once:
+With `programs.shojiwm.initConfig.enable = true`, the module also initializes
+the ShojiWM TypeScript config directory for the listed users during system
+activation. It copies the default config only when `src/index.tsx` does not
+exist yet. Existing user config files such as `src/index.tsx` and
+`src/window-manager.ts` are kept. The generated support files are refreshed on
+every rebuild:
+
+- `node_modules/shoji_wm`, linked to the current Nix store package
+- `package.json`
+- `tsconfig.json`
+
+Keeping these support files in sync matters because the TypeScript runtime uses
+`tsconfig.json` for TSX/JSX transformation and uses the `shoji_wm` package link
+for type and runtime imports.
+
+If you do not want the NixOS module to manage the config directory, omit
+`initConfig` and initialize the editable TypeScript config manually:
 
 ```bash
 nix run github:bea4dev/ShojiWM#init-config
@@ -188,24 +210,6 @@ nix run github:bea4dev/ShojiWM#init-config
 This creates `~/.config/shojiwm` if it does not already exist, and links
 `~/.config/shojiwm/node_modules/shoji_wm` to the package in the Nix store. Your
 config remains writable and can still be hot-reloaded.
-
-Alternatively, the NixOS module can initialize selected users automatically
-during system activation:
-
-```nix
-{
-  programs.shojiwm = {
-    enable = true;
-    initConfig = {
-      enable = true;
-      users = [ "your-user" ];
-    };
-  };
-}
-```
-
-This keeps an existing `src/index.tsx`, but refreshes the
-`node_modules/shoji_wm` symlink whenever the system is rebuilt.
 
 ### xwayland-satellite fork
 
