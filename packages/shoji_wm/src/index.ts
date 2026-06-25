@@ -802,29 +802,43 @@ const PRELOAD_CONTROLLER: PreloadController = {};
  * });
  * ```
  */
-export const COMPOSITOR: CompositorDefinition = {
-  event: createCompositorEventController(),
-  onEnable(listener) {
-    return this.event.onEnable(listener);
-  },
-  onDisable(listener) {
-    return this.event.onDisable(listener);
-  },
-  preload: PRELOAD_CONTROLLER,
-  effect: {
-    background_effect: null,
-  },
-  output: OUTPUT_CONTROLLER,
-  env: ENV_CONTROLLER,
-  process: PROCESS_CONTROLLER,
-  key: KEY_BINDING_CONTROLLER,
-  pointer: POINTER_CONTROLLER,
-  input: INPUT_CONTROLLER,
-  runtime: RUNTIME_CONTROLLER,
-  window: WINDOW_CONTROLLER,
-  layer: LAYER_CONTROLLER,
-  debug: DEBUG_CONTROLLER,
+function createCompositorDefinition(): CompositorDefinition {
+  return {
+    event: createCompositorEventController(),
+    onEnable(listener) {
+      return this.event.onEnable(listener);
+    },
+    onDisable(listener) {
+      return this.event.onDisable(listener);
+    },
+    preload: PRELOAD_CONTROLLER,
+    effect: {
+      background_effect: null,
+    },
+    output: OUTPUT_CONTROLLER,
+    env: ENV_CONTROLLER,
+    process: PROCESS_CONTROLLER,
+    key: KEY_BINDING_CONTROLLER,
+    pointer: POINTER_CONTROLLER,
+    input: INPUT_CONTROLLER,
+    runtime: RUNTIME_CONTROLLER,
+    window: WINDOW_CONTROLLER,
+    layer: LAYER_CONTROLLER,
+    debug: DEBUG_CONTROLLER,
+  };
+}
+
+const COMPOSITOR_GLOBAL_KEY = "__shoji_wm_COMPOSITOR__";
+type ShojiCompositorGlobal = typeof globalThis & {
+  [COMPOSITOR_GLOBAL_KEY]?: CompositorDefinition;
 };
+
+const shojiCompositorGlobal = globalThis as ShojiCompositorGlobal;
+
+export const COMPOSITOR: CompositorDefinition =
+  shojiCompositorGlobal[COMPOSITOR_GLOBAL_KEY] ??
+  (shojiCompositorGlobal[COMPOSITOR_GLOBAL_KEY] =
+    createCompositorDefinition());
 
 installOutputChangeEmitter((event) => {
   COMPOSITOR.event.emitOutputChange(event);
