@@ -103,6 +103,137 @@ directories. It performs the following:
 
 Run `./dist/install.sh --help` to see this list.
 
+## NixOS / flakes
+
+ShojiWM also provides an experimental Nix flake. The flake is intended to keep
+the same split as the source installer:
+
+- the compositor, portal backend, and TypeScript runtime live in the Nix store
+- your editable TypeScript config lives in `~/.config/shojiwm`
+- development still uses `--dev` and the source tree directly
+
+:::warning[Experimental]
+The NixOS support is new. The first build may ask you to replace fake hashes for
+the npm dependency tree and the Smithay git dependency. This is the normal Nix
+workflow for newly added fixed-output dependencies.
+:::
+
+### Development shell
+
+From the ShojiWM source tree:
+
+```bash
+nix develop
+npm ci
+cargo run --release -p shoji_wm -- --dev
+```
+
+`--dev` keeps using the repository checkout:
+
+```text
+./tools/decoration-runtime.ts
+./packages/config/src/index.tsx
+./packages/shoji_wm
+./node_modules/.bin/tsx
+```
+
+This means you can keep the current fast edit-and-run workflow while using Nix
+only to provide the native build dependencies.
+
+### NixOS module
+
+Add ShojiWM as a flake input:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    shojiwm.url = "github:bea4dev/ShojiWM";
+  };
+
+  outputs = { nixpkgs, shojiwm, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        shojiwm.nixosModules.default
+        {
+          programs.shojiwm.enable = true;
+        }
+      ];
+    };
+  };
+}
+```
+
+Then apply your system configuration:
+
+```bash
+sudo nixos-rebuild switch --flake .#your-host
+```
+
+The module installs:
+
+- the `shoji_wm` compositor
+- `xdg-desktop-portal-shojiwm`
+- the Wayland session entry for display managers
+- the ShojiWM portal preference for screen capture
+- `xwayland-satellite`, when available from your nixpkgs
+
+Initialize the editable TypeScript config once:
+
+```bash
+nix run github:bea4dev/ShojiWM#init-config
+```
+
+This creates `~/.config/shojiwm` if it does not already exist, and links
+`~/.config/shojiwm/node_modules/shoji_wm` to the package in the Nix store. Your
+config remains writable and can still be hot-reloaded.
+
+### xwayland-satellite fork
+
+If you need the ShojiWM-specific `xwayland-satellite` fork, override the package
+from the NixOS module:
+
+```nix
+{
+  programs.shojiwm = {
+    enable = true;
+    xwaylandSatellite.package =
+      inputs.xwayland-satellite-shojiwm.packages.${pkgs.system}.default;
+  };
+}
+```
+
+Where your flake inputs include the fork, for example:
+
+```nix
+{
+  inputs.xwayland-satellite-shojiwm.url =
+    "github:bea4dev/xwayland-satellite/shojiwm";
+}
+```
+
+You can also set `programs.shojiwm.xwaylandSatellite.package` to any package that
+provides a `bin/xwayland-satellite` executable.
+
+### Updating Nix hashes
+
+The initial `flake.nix` support uses fake hashes for fixed-output dependencies
+that cannot be computed without running Nix:
+
+- `npmDepsHash` in `nix/package.nix`
+- Smithay git dependency hashes in `cargoLock.outputHashes`
+
+Run:
+
+```bash
+nix build .#shojiwm
+```
+
+Nix will fail with a message that includes the expected hash. Replace the
+corresponding `lib.fakeHash` value with that hash, then run the build again.
+Repeat until all fixed-output hashes are resolved.
+
 ## Running
 
 - **From your login manager:** choose **ShojiWM** as the session and log in.

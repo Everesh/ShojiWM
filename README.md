@@ -13,6 +13,20 @@
  - [English](https://bea4dev.github.io/ShojiWM/)
  - [日本語](https://bea4dev.github.io/ShojiWM/ja/)
 
+## Quick Start
+
+Source installs are documented in the getting started guide. Experimental NixOS
+support is also available:
+
+```bash
+nix develop
+npm ci
+cargo run --release -p shoji_wm -- --dev
+```
+
+For NixOS module installation, see the
+[installation docs](https://bea4dev.github.io/ShojiWM/docs/getting-started/installation).
+
 ## Features
 
 - [x] Window management

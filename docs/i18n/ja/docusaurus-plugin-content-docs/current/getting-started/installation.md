@@ -102,6 +102,136 @@ cd ShojiWM
 
 `./dist/install.sh --help` でこの一覧を表示できます。
 
+## NixOS / flakes
+
+ShojiWM は実験的な Nix flake も提供しています。構成はソースインストーラーと同じ考え方で、
+次のように分離します。
+
+- コンポジター、portal バックエンド、TypeScript ランタイムは Nix store に配置
+- 編集する TypeScript 設定は `~/.config/shojiwm` に配置
+- 開発時は引き続き `--dev` でソースツリーを直接参照
+
+:::warning[実験的機能]
+NixOS 対応は追加直後です。初回ビルドでは npm 依存ツリーや Smithay の git 依存に対して
+fake hash の置き換えが必要になる可能性があります。これは固定出力依存を追加した直後の
+通常の Nix ワークフローです。
+:::
+
+### 開発シェル
+
+ShojiWM のソースツリーで次を実行します。
+
+```bash
+nix develop
+npm ci
+cargo run --release -p shoji_wm -- --dev
+```
+
+`--dev` では現在と同じくリポジトリ内のファイルを直接使います。
+
+```text
+./tools/decoration-runtime.ts
+./packages/config/src/index.tsx
+./packages/shoji_wm
+./node_modules/.bin/tsx
+```
+
+つまり、Nix はネイティブ依存を揃えるために使い、TS 設定や runtime の編集は今まで通り
+素早く試せます。
+
+### NixOS module
+
+ShojiWM を flake input に追加します。
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    shojiwm.url = "github:bea4dev/ShojiWM";
+  };
+
+  outputs = { nixpkgs, shojiwm, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        shojiwm.nixosModules.default
+        {
+          programs.shojiwm.enable = true;
+        }
+      ];
+    };
+  };
+}
+```
+
+その後、通常通り system configuration を適用します。
+
+```bash
+sudo nixos-rebuild switch --flake .#your-host
+```
+
+module は次をインストールします。
+
+- `shoji_wm` コンポジター
+- `xdg-desktop-portal-shojiwm`
+- ログインマネージャー用の Wayland セッション
+- スクリーンキャプチャ用の ShojiWM portal 設定
+- nixpkgs に存在する場合は `xwayland-satellite`
+
+編集可能な TypeScript 設定は一度だけ初期化します。
+
+```bash
+nix run github:bea4dev/ShojiWM#init-config
+```
+
+これにより、存在しない場合は `~/.config/shojiwm` が作成され、
+`~/.config/shojiwm/node_modules/shoji_wm` が Nix store 内の package へリンクされます。
+設定ファイル自体は書き換え可能なままなので、ホットリロードも使えます。
+
+### xwayland-satellite fork
+
+ShojiWM 向けの `xwayland-satellite` fork が必要な場合は、NixOS module の package option
+で差し替えます。
+
+```nix
+{
+  programs.shojiwm = {
+    enable = true;
+    xwaylandSatellite.package =
+      inputs.xwayland-satellite-shojiwm.packages.${pkgs.system}.default;
+  };
+}
+```
+
+flake input には、例えば次のように fork を追加します。
+
+```nix
+{
+  inputs.xwayland-satellite-shojiwm.url =
+    "github:bea4dev/xwayland-satellite/shojiwm";
+}
+```
+
+`programs.shojiwm.xwaylandSatellite.package` には、`bin/xwayland-satellite` を提供する任意の
+package を指定できます。
+
+### Nix hash の更新
+
+初期の `flake.nix` 対応では、この環境で Nix を実行してhashを計算できないため、固定出力
+依存に fake hash を入れています。
+
+- `nix/package.nix` の `npmDepsHash`
+- `cargoLock.outputHashes` の Smithay git 依存 hash
+
+まず次を実行します。
+
+```bash
+nix build .#shojiwm
+```
+
+Nix は期待する hash を含むエラーを出します。その値で対応する `lib.fakeHash` を置き換え、
+再度ビルドしてください。すべての固定出力 hash が解決されるまで、この流れを繰り返します。
+
 ## 実行
 
 - **ログインマネージャーから:** セッションとして **ShojiWM** を選んでログインします。
