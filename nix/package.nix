@@ -4,6 +4,9 @@
   rustPlatform,
   buildNpmPackage,
   makeWrapper,
+  clang,
+  llvmPackages,
+  libclang ? llvmPackages.libclang,
   pkg-config,
   nodejs_22,
   wayland,
@@ -116,9 +119,12 @@ rustPlatform.buildRustPackage {
   };
 
   nativeBuildInputs = [
+    clang
     makeWrapper
     pkg-config
   ];
+
+  LIBCLANG_PATH = "${libclang.lib or libclang}/lib";
 
   buildInputs = [
     wayland

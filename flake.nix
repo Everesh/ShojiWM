@@ -89,6 +89,7 @@
               with pkgs;
               [
                 cargo
+                clang
                 rustc
                 rustfmt
                 clippy
@@ -119,6 +120,7 @@
             GBM_BACKENDS_PATH = gbmBackendsPath;
             LIBGL_DRIVERS_PATH = driDriversPath;
             __EGL_VENDOR_LIBRARY_DIRS = eglVendorLibraryDirs;
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib or pkgs.llvmPackages.libclang}/lib";
 
             shellHook = ''
               echo "ShojiWM development shell"
