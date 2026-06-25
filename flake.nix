@@ -55,7 +55,6 @@
         let
           pkgs = pkgsFor system;
           libgbm = pkgs.libgbm or pkgs.mesa;
-          mesaDrivers = pkgs.mesa.drivers or pkgs.mesa;
           xwayland = pkgs.xwayland or (pkgs.xorg.xwayland or null);
           xwaylandSatellite = pkgs.xwayland-satellite or null;
           runtimeLibraryPath = lib.makeLibraryPath (
@@ -75,15 +74,12 @@
             ]
           );
           gbmBackendsPath = lib.makeSearchPath "lib/gbm" [
-            mesaDrivers
             pkgs.mesa
           ];
           driDriversPath = lib.makeSearchPath "lib/dri" [
-            mesaDrivers
             pkgs.mesa
           ];
           eglVendorLibraryDirs = lib.makeSearchPath "share/glvnd/egl_vendor.d" [
-            mesaDrivers
             pkgs.mesa
           ];
         in

@@ -14,7 +14,6 @@
   mesa,
   libglvnd,
   libgbm ? mesa,
-  mesaDrivers ? (mesa.drivers or mesa),
   pixman,
   seatd,
   pipewire,
@@ -91,17 +90,14 @@ let
   ];
 
   gbmBackendsPath = lib.makeSearchPath "lib/gbm" [
-    mesaDrivers
     mesa
   ];
 
   driDriversPath = lib.makeSearchPath "lib/dri" [
-    mesaDrivers
     mesa
   ];
 
   eglVendorLibraryDirs = lib.makeSearchPath "share/glvnd/egl_vendor.d" [
-    mesaDrivers
     mesa
   ];
 in
@@ -115,8 +111,8 @@ rustPlatform.buildRustPackage {
     # The workspace currently depends on a Smithay git revision. Replace these
     # fake hashes with the values printed by Nix during the first build.
     outputHashes = {
-      "smithay-0.7.0" = lib.fakeHash;
-      "smithay-drm-extras-0.1.0" = lib.fakeHash;
+      "smithay-0.7.0" = "sha256-g5dlLCXhqedqFBi8JcY3mCVkGafLst9pNpFp4mPgffo=";
+      "smithay-drm-extras-0.1.0" = "sha256-g5dlLCXhqedqFBi8JcY3mCVkGafLst9pNpFp4mPgffo=";
     };
   };
 
