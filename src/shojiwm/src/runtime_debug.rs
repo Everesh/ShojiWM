@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-/// Mirror of `WINDOW_MANAGER.debug` from the TS runtime. Kept narrow on
+/// Mirror of `COMPOSITOR.debug` from the TS runtime. Kept narrow on
 /// purpose: this carries only debug toggles that need to flow back into the
 /// compositor render path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

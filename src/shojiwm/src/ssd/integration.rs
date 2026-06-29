@@ -2108,7 +2108,7 @@ impl ShojiWM {
         Ok(())
     }
 
-    /// Re-evaluate `WINDOW_MANAGER.effect.popup` assignments for all popups on
+    /// Re-evaluate `COMPOSITOR.effect.popup` assignments for all popups on
     /// the given output. Mirrors `refresh_layer_effects_for_output`: called
     /// once per rendered frame, with the runtime returning the full effect set
     /// for the currently mapped popups.

@@ -100,14 +100,14 @@ limited to OBS or affected Qt clients.
 Example shape:
 
 ```ts
-WINDOW_MANAGER.window.onMapped = (window) => {
+COMPOSITOR.event.onOpen((window) => {
   // Workaround for OBS/Qt Wayland fractional-scale subsurface input bug.
   // OBS may initialize preview subsurface input mapping incorrectly until the
   // toplevel goes through a resize configure.
   if (window.appId === "com.obsproject.Studio" && window.output.scale !== 1) {
     window.requestResizeJiggle({ dx: 1, dy: 0 });
   }
-};
+});
 ```
 
 The Rust-side API needed for this should be general, not OBS-specific. Possible

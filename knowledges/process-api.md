@@ -1,6 +1,6 @@
 # Runtime Process API
 
-ShojiWM now exposes a TypeScript-side process controller at `WINDOW_MANAGER.process`.
+ShojiWM now exposes a TypeScript-side process controller at `COMPOSITOR.process`.
 
 The API is split into three different meanings:
 
@@ -20,14 +20,14 @@ treated as desired state and diffed by `id`; imperative spawns are not diffed.
 ## API shape
 
 ```ts
-WINDOW_MANAGER.process.once(id, {
+COMPOSITOR.process.once(id, {
   command: ["fcitx5", "-d"],
   cwd?: "/absolute/or/config-relative/path",
   env?: { KEY: "value" },
   runPolicy?: "once-per-session" | "once-per-config-version",
 });
 
-WINDOW_MANAGER.process.service(id, {
+COMPOSITOR.process.service(id, {
   command: ["waybar"],
   cwd?: "/absolute/or/config-relative/path",
   env?: { KEY: "value" },
@@ -35,7 +35,7 @@ WINDOW_MANAGER.process.service(id, {
   reload?: "keep-if-unchanged" | "always-restart",
 });
 
-WINDOW_MANAGER.process.spawn({
+COMPOSITOR.process.spawn({
   command: ["notify-send", "hello"],
   cwd?: "/absolute/or/config-relative/path",
   env?: { KEY: "value" },
@@ -45,7 +45,7 @@ WINDOW_MANAGER.process.spawn({
 `command` can be replaced with `shell`:
 
 ```ts
-WINDOW_MANAGER.process.spawn({
+COMPOSITOR.process.spawn({
   shell: "notify-send 'Firefox focused'",
 });
 ```
@@ -86,24 +86,24 @@ Relative `cwd` values are resolved relative to the config file.
 ## Recommended usage
 
 ```ts
-WINDOW_MANAGER.process.once("fcitx5", {
+COMPOSITOR.process.once("fcitx5", {
   command: ["fcitx5", "-d"],
 });
 
-WINDOW_MANAGER.process.service("waybar", {
+COMPOSITOR.process.service("waybar", {
   command: ["waybar"],
   restart: "on-exit",
 });
 
-WINDOW_MANAGER.process.service("mako", {
+COMPOSITOR.process.service("mako", {
   command: ["mako"],
   restart: "on-failure",
   reload: "keep-if-unchanged",
 });
 
-WINDOW_MANAGER.event.onFocus((window, focused) => {
+COMPOSITOR.event.onFocus((window, focused) => {
   if (focused && window.appId() === "firefox") {
-    WINDOW_MANAGER.process.spawn({
+    COMPOSITOR.process.spawn({
       command: ["notify-send", "Firefox focused"],
     });
   }

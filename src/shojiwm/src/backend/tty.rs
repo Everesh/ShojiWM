@@ -7080,7 +7080,7 @@ fn layer_source_effect_elements(
 }
 
 /// Display elements for all popups of a layer surface, each composed with its
-/// configured popup effects (`WINDOW_MANAGER.effect.popup`). Popups without
+/// configured popup effects (`COMPOSITOR.effect.popup`). Popups without
 /// an assignment pass through unchanged. Returned front-to-back, in the same
 /// order the popups would have rendered inside `layer_surface_elements`.
 fn composed_popup_scene_elements(

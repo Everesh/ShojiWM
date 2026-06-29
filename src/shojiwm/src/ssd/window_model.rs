@@ -490,7 +490,7 @@ pub enum PopupParentKindSnapshot {
 }
 
 /// TypeScript-facing snapshot of a mapped xdg_popup, used to evaluate
-/// per-popup effects (`WINDOW_MANAGER.effect.popup`).
+/// per-popup effects (`COMPOSITOR.effect.popup`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaylandPopupSnapshot {

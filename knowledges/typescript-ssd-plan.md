@@ -69,7 +69,7 @@ Rust 側が持つべき概念:
 例:
 
 ```tsx
-WINDOW_MANAGER.decoration = (window: WaylandWindow) => {
+COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const color = window.isFocused ? "#ffff00" : "#ffffff";
 
   return (
@@ -196,7 +196,7 @@ Rust 側が最終的に行う:
 
 - custom JSX runtime
 - `WaylandWindow` 型
-- `WINDOW_MANAGER.decoration` エントリポイント
+- `COMPOSITOR.window.composition` エントリポイント
 - basic node types:
   - `Box`
   - `Label`
@@ -557,7 +557,7 @@ style system を拡張。
 
 この段階の成功条件:
 
-- `WINDOW_MANAGER.decoration(window)` を TSX で書ける
+- `COMPOSITOR.window.composition(window)` を TSX で書ける
 - titlebar が描ける
 - close button が動く
 - focused window で色が変わる

@@ -17,13 +17,13 @@ const effect = compileEffect({
 
 ## Why It Lives On `compileEffect`
 
-`invalidate` は `<ShaderEffect />` や `WINDOW_MANAGER.effect.background_effect` の設定ではなく、
+`invalidate` は `<ShaderEffect />` や `COMPOSITOR.effect.background_effect` の設定ではなく、
 **effect 自体が source のどの変化に反応するか** を表します。
 
 そのため、同じ effect を
 
 - `<ShaderEffect />`
-- `WINDOW_MANAGER.effect.background_effect`
+- `COMPOSITOR.effect.background_effect`
 
 のどちらでも同じ意味で使えるように、`compileEffect(...)` 側で定義します。
 

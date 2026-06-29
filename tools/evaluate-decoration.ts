@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import {
   createCompositionEvaluationCache,
   installAssetResolverBridge,
-  WINDOW_MANAGER,
+  COMPOSITOR,
   type WindowCompositionFunction,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
@@ -83,9 +83,12 @@ async function main() {
   };
 
   const cache = createCompositionEvaluationCache(snapshot, actions, composition);
-  const serialized = cache.reevaluate().serialized;
-
-  console.log(JSON.stringify(serialized, null, 2));
+  try {
+    const serialized = cache.reevaluate().serialized;
+    console.log(JSON.stringify(serialized, null, 2));
+  } finally {
+    COMPOSITOR.event.emitDisable("shutdown");
+  }
 }
 
 function resolveComposition(
@@ -94,14 +97,12 @@ function resolveComposition(
   type WindowSlot = { composition?: WindowCompositionFunction | null };
   type WmSlot = { window?: WindowSlot };
   const maybeComposition =
-    WINDOW_MANAGER.window.composition ??
+    COMPOSITOR.window.composition ??
     (loaded.default as WmSlot | undefined)?.window?.composition ??
     (loaded.composition as WindowCompositionFunction | undefined);
 
   if (!maybeComposition) {
-    throw new Error(
-      "config did not assign WINDOW_MANAGER.window.composition",
-    );
+    throw new Error("config did not assign COMPOSITOR.window.composition");
   }
 
   return maybeComposition;
