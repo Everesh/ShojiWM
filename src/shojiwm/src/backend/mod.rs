@@ -94,6 +94,7 @@ pub fn run_tty_udev() -> Result<(), Box<dyn std::error::Error>> {
     let (mut session, session_notifier) = LibSeatSession::new()?;
     let seat_name = session.seat();
     info!(seat = %seat_name, "initialized tty session");
+    state.tty_session = Some(session.clone());
 
     let udev = UdevBackend::new(&seat_name)?;
 

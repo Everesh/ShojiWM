@@ -1,8 +1,11 @@
 use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
-        GestureEndEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    backend::{
+        input::{
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+            GestureEndEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
+            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        },
+        session::Session,
     },
     desktop::{Window, WindowSurfaceType},
     input::{
@@ -37,6 +40,7 @@ enum KeyboardAction {
     ReloadConfig,
     RuntimeKeyBinding(String),
     LogMarker(u8),
+    ChangeVt(i32),
 }
 
 fn layer_focus_debug_enabled() -> bool {
@@ -420,6 +424,31 @@ impl ShojiWM {
                                 }
                             {
                                 FilterResult::Intercept(KeyboardAction::LogMarker(digit))
+                            } else if matches!(
+                                key_phase,
+                                crate::runtime_key_binding::RuntimeKeyBindingPhase::Press,
+                            ) && modifiers.ctrl
+                                && modifiers.alt
+                                && !modifiers.shift
+                                && !modifiers.logo
+                                && let Some(raw) = handle.raw_latin_sym_or_raw_current_sym()
+                                && let Some(vt) = match raw.raw() {
+                                    keysyms::KEY_F1 => Some(1),
+                                    keysyms::KEY_F2 => Some(2),
+                                    keysyms::KEY_F3 => Some(3),
+                                    keysyms::KEY_F4 => Some(4),
+                                    keysyms::KEY_F5 => Some(5),
+                                    keysyms::KEY_F6 => Some(6),
+                                    keysyms::KEY_F7 => Some(7),
+                                    keysyms::KEY_F8 => Some(8),
+                                    keysyms::KEY_F9 => Some(9),
+                                    keysyms::KEY_F10 => Some(10),
+                                    keysyms::KEY_F11 => Some(11),
+                                    keysyms::KEY_F12 => Some(12),
+                                    _ => None,
+                                }
+                            {
+                                FilterResult::Intercept(KeyboardAction::ChangeVt(vt))
                             } else {
                                 FilterResult::Forward
                             }
@@ -435,6 +464,15 @@ impl ShojiWM {
                     }
                     KeyboardAction::LogMarker(digit) => {
                         tracing::info!(marker = digit, "log marker");
+                    }
+                    KeyboardAction::ChangeVt(vt) => {
+                        if let Some(ref mut session) = self.tty_session {
+                            if let Err(err) = session.change_vt(vt) {
+                                warn!(?err, vt, "failed to change VT");
+                            }
+                        } else {
+                            debug!(vt, "ignoring VT change req (no tty  session)")
+                        }
                     }
                     KeyboardAction::Forward => {}
                 }

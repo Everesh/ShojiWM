@@ -11,8 +11,8 @@ use std::{
 };
 
 use smithay::{
-    backend::drm::DrmNode,
     backend::renderer::element::memory::MemoryRenderBuffer,
+    backend::{drm::DrmNode, session::libseat::LibSeatSession},
     desktop::{
         LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType,
         find_popup_root_surface, layer_map_for_output, utils::under_from_surface_tree,
@@ -287,6 +287,7 @@ pub struct ShojiWM {
     pub seat: Seat<Self>,
 
     pub tty_backends: HashMap<DrmNode, BackendData>,
+    pub tty_session: Option<LibSeatSession>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
     pub window_primary_output_names: HashMap<Window, String>,
     pub windows_ready_for_decoration: HashSet<String>,
@@ -1164,6 +1165,7 @@ impl ShojiWM {
             seat,
 
             tty_backends: HashMap::new(),
+            tty_session: None,
             window_decorations: HashMap::new(),
             window_primary_output_names: HashMap::new(),
             windows_ready_for_decoration: HashSet::new(),
