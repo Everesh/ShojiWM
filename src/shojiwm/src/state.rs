@@ -708,16 +708,15 @@ impl ShojiWM {
     pub fn set_window_keyboard_focus_target_surface(
         &mut self,
         window: &Window,
-        surface: Option<&WlSurface>,
+        _surface: Option<&WlSurface>,
     ) {
         let root = Self::window_root_surface(window);
-        let focus = surface
-            .filter(|surface| self.surface_belongs_to_window(window, surface))
-            .cloned()
-            .or_else(|| root.clone());
 
         self.window_keyboard_focus_owner = root;
-        self.window_keyboard_focus = focus;
+        // Popup keyboard grabs temporarily focus popup surfaces themselves.
+        // The compositor's persistent window focus target should remain the
+        // root surface so short-lived child surfaces do not steal text input.
+        self.window_keyboard_focus = self.window_keyboard_focus_owner.clone();
     }
 
     pub fn sync_window_keyboard_focus_from_surface(&mut self, surface: Option<&WlSurface>) {
@@ -732,9 +731,9 @@ impl ShojiWM {
             .elements()
             .find(|window| self.surface_belongs_to_window(window, surface))
             .and_then(Self::window_root_surface);
-        if owner_root.is_some() {
-            self.window_keyboard_focus_owner = owner_root;
-            self.window_keyboard_focus = Some(surface.clone());
+        if let Some(owner_root) = owner_root {
+            self.window_keyboard_focus_owner = Some(owner_root.clone());
+            self.window_keyboard_focus = Some(owner_root);
         }
     }
 
