@@ -3,6 +3,7 @@ use crate::{
     handlers::{layer_shell, xdg_shell},
     state::{ClientState, CursorOverrideApplied, ShojiWM},
 };
+use calloop::Interest;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{
@@ -10,13 +11,9 @@ use smithay::{
         protocol::{wl_buffer, wl_surface::WlSurface},
     },
     wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            get_parent, is_sync_subsurface, with_states,
-        },
-        shell::xdg::SurfaceCachedState,
-        shm::{ShmHandler, ShmState},
+        buffer::BufferHandler, compositor::{
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes, add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states
+        }, dmabuf::get_dmabuf, shell::xdg::SurfaceCachedState, shm::{ShmHandler, ShmState}
     },
 };
 use std::{
@@ -414,6 +411,43 @@ impl CompositorHandler for ShojiWM {
 
     fn destroyed(&mut self, _surface: &WlSurface) {
         self.refresh_idle_inhibit_state();
+    }
+
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // On Intel/AMD, the kernel's dma-resv fences implicitly protect us, but the
+        // NVIDIA proprietary driver provides no such safety net. Without it, the
+        // compositor ends up sampling VRAM that is still being written to at the
+        // exact moment of "input -> damage -> client redraw", which shows up as
+        // visual noise. To prevent this, we explicitly wait for the dmabuf's fences
+        // to signal when a commit occurs (by blocking the commit until then).
+        add_pre_commit_hook::<Self, _>(surface, move |state, _dh, surface| {
+            let maybe_dmabuf = with_states(surface, |data| {
+                data.cached_state
+                    .get::<SurfaceAttributes>()
+                    .pending()
+                    .buffer
+                    .as_ref()
+                    .and_then(|assignment| match assignment {
+                        BufferAssignment::NewBuffer(buffer) => get_dmabuf(buffer).cloned().ok(),
+                        _ => None,
+                    })
+            });
+            if let Some(dmabuf) = maybe_dmabuf
+                && let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ)
+                && let Some(client) = surface.client()
+            {
+                let res = state.loop_handle.insert_source(source, move |_, _, state| {
+                    let dh = state.display_handle.clone();
+                    state
+                        .client_compositor_state(&client)
+                        .blocker_cleared(state, &dh);
+                    Ok(())
+                });
+                if res.is_ok() {
+                    add_blocker(surface, blocker);
+                }
+            }
+        });
     }
 }
 

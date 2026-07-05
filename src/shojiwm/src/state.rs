@@ -233,6 +233,7 @@ pub struct ShojiWM {
 
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
+    pub loop_handle: LoopHandle<'static, ShojiWM>,
 
     // Smithay State
     pub compositor_state: CompositorState,
@@ -1012,6 +1013,7 @@ impl ShojiWM {
 
         // Get the loop signal, used to stop the event loop
         let loop_signal = event_loop.get_signal();
+        let loop_handle = event_loop.handle();
         let runtime_paths = crate::install_paths::decoration_runtime_paths();
         let evaluator = NodeDecorationEvaluator::for_paths(
             runtime_paths.tsx_program,
@@ -1121,6 +1123,7 @@ impl ShojiWM {
 
             space,
             loop_signal,
+            loop_handle,
             socket_name,
 
             compositor_state,
