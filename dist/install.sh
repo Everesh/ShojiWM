@@ -173,6 +173,8 @@ org.freedesktop.impl.portal.ScreenCast=shojiwm
 EOF
 
     echo ">> reloading systemd user services"
+    #sleep is needed to prevent dbus errors
+    sleep 1
     systemctl --user daemon-reload
     systemctl --user stop xdg-desktop-portal-shojiwm.service 2>/dev/null || true
     systemctl --user restart xdg-desktop-portal 2>/dev/null || true
