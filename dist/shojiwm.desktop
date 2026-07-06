@@ -1,6 +1,17 @@
 [Desktop Entry]
+Name[en_GB]=ShojiWM
 Name=ShojiWM
+GenericName[en_GB]=
+GenericName=
+Comment[en_GB]=Start the ShojiWM Wayland compositor
 Comment=Start the ShojiWM Wayland compositor
 Exec=/usr/bin/shoji_wm --tty
 Type=Application
 DesktopNames=ShojiWM
+MimeType=
+Path=
+StartupNotify=true
+Terminal=false
+TerminalOptions=
+X-KDE-SubstituteUID=false
+X-KDE-Username=
