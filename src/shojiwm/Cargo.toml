@@ -46,8 +46,8 @@ libc = "0.2"
 timescope = "0.1.3"
 
 [features]
-# Hardened allocator for chasing heap corruption (issue #1, the rio-open
-# crash): `secure` adds guard pages and encoded free lists so a
+# Hardened allocator for chasing heap corruption:
+# `secure` adds guard pages and encoded free lists so a
 # use-after-free write aborts at the faulting site instead of corrupting
 # state that detonates later; `debug` adds mimalloc's internal assertions.
 # Build with `cargo build --release --features heap-debug` and reproduce.
