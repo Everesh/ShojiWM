@@ -2,6 +2,7 @@ import type { PointerController } from "./types";
 
 interface RuntimePointerConfig {
   windowMoveModifier?: string;
+  windowResizeModifier?: string;
 }
 
 let desiredPointerConfig: RuntimePointerConfig = {};
@@ -28,6 +29,14 @@ function normalizeModifier(modifier: string): string {
 export const POINTER_CONTROLLER: PointerController = {
   bindWindowMoveModifier(modifier) {
     registrationTarget().windowMoveModifier = normalizeModifier(modifier);
+
+    if (!stagedPointerConfig) {
+      pendingPointerConfig = true;
+    }
+  },
+
+  bindWindowResizeModifier(modifier) {
+    registrationTarget().windowResizeModifier = normalizeModifier(modifier);
 
     if (!stagedPointerConfig) {
       pendingPointerConfig = true;

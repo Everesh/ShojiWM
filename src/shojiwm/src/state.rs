@@ -338,6 +338,7 @@ pub struct ShojiWM {
     pub runtime_key_binding_entries: BTreeMap<String, RuntimeKeyBindingEntry>,
     pub runtime_key_bindings: Vec<CompiledRuntimeKeyBinding>,
     pub runtime_window_move_modifier: Option<RuntimePointerModifier>,
+    pub runtime_window_resize_modifier: Option<RuntimePointerModifier>,
     pub runtime_input_config: RuntimeInputConfig,
     pub runtime_applied_xkb_config: Option<crate::runtime_input::RuntimeKeyboardInputConfig>,
     pub runtime_active_keyboard_device: Option<RuntimeInputDeviceSnapshot>,
@@ -1215,6 +1216,7 @@ impl ShojiWM {
             runtime_key_binding_entries: Default::default(),
             runtime_key_bindings: Vec::new(),
             runtime_window_move_modifier: None,
+            runtime_window_resize_modifier: None,
             runtime_input_config: Default::default(),
             runtime_applied_xkb_config: None,
             runtime_active_keyboard_device: None,
@@ -2412,6 +2414,21 @@ impl ShojiWM {
                 }
             }
         });
+
+        self.runtime_window_resize_modifier =
+            update.window_resize_modifier.and_then(
+                |shortcut| match parse_runtime_pointer_modifier(&shortcut) {
+                    Ok(modifier) => Some(modifier),
+                    Err(error) => {
+                        tracing::warn!(
+                            window_resize_modifier = shortcut,
+                            ?error,
+                            "ignoring invalid runtime pointer modifier"
+                        );
+                        None
+                    }
+                },
+            );
     }
 
     pub fn consume_runtime_pointer_config(&mut self, update: Option<RuntimePointerConfigUpdate>) {

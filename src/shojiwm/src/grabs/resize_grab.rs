@@ -11,10 +11,11 @@ use crate::state::ShojiWM;
 use smithay::{
     desktop::{Space, Window},
     input::pointer::{
-        AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
-        GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
-        MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+        AxisFrame, ButtonEvent, CursorIcon, GestureHoldBeginEvent, GestureHoldEndEvent,
+        GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
+        GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+        GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+        RelativeMotionEvent,
     },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -102,6 +103,21 @@ impl ResizeSurfaceGrab {
     }
 
     pub fn notify_start(&mut self, data: &mut ShojiWM) {
+        data.cursor_override = Some(match self.edges {
+            e if e.contains(ResizeEdge::TOP | ResizeEdge::LEFT) => CursorIcon::NwResize,
+            e if e.contains(ResizeEdge::TOP | ResizeEdge::RIGHT) => CursorIcon::NeResize,
+            e if e.contains(ResizeEdge::BOTTOM | ResizeEdge::LEFT) => CursorIcon::SwResize,
+            e if e.contains(ResizeEdge::BOTTOM | ResizeEdge::RIGHT) => CursorIcon::SeResize,
+            e if e.contains(ResizeEdge::LEFT) => CursorIcon::WResize,
+            e if e.contains(ResizeEdge::RIGHT) => CursorIcon::EResize,
+            e if e.contains(ResizeEdge::TOP) => CursorIcon::NResize,
+            e if e.contains(ResizeEdge::BOTTOM) => CursorIcon::SResize,
+            e if e.contains(ResizeEdge::LEFT | ResizeEdge::RIGHT) => CursorIcon::EwResize,
+            e if e.contains(ResizeEdge::TOP | ResizeEdge::BOTTOM) => CursorIcon::NsResize,
+            _ => CursorIcon::AllResize,
+        });
+        data.schedule_redraw();
+
         self.runtime_managed = self.invoke_runtime_event(
             data,
             WindowResizePhaseSnapshot::Start,
