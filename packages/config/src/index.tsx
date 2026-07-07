@@ -598,6 +598,7 @@ COMPOSITOR.event.onWindowResize((event) => {
 });
 
 COMPOSITOR.pointer.bindWindowMoveModifier("Super");
+COMPOSITOR.pointer.bindWindowResizeModifier("Super");
 
 COMPOSITOR.event.onWindowMove((event) => {
   HYBRID_WINDOW_MANAGER.onWindowMove(event);

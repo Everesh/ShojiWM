@@ -1188,6 +1188,14 @@ export interface PointerController {
    * してドラッグできるようにします。
    */
   bindWindowMoveModifier(modifier: string): void;
+
+  /**
+   * Set the modifier key that lets the user resize any window by holding the
+   * modifier and right clicking anywhere on the window surface, binding to
+   * nearest surface corner.
+   * えーと、マウスの右クリック、ウィンドウのサイズ変更
+   */
+  bindWindowResizeModifier(modifier: string): void;
 }
 
 export interface InputDeviceKindFlags {

@@ -158,6 +158,7 @@ pub struct WindowResizeEdgesSnapshot {
 #[serde(rename_all = "kebab-case")]
 pub enum WindowResizeSourceSnapshot {
     Ssd,
+    Modifier,
     ClientCsd,
     Xwayland,
 }

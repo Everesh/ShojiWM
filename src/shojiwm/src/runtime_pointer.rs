@@ -4,6 +4,7 @@ use smithay::input::keyboard::ModifiersState;
 #[serde(rename_all = "camelCase")]
 pub struct RuntimePointerConfigUpdate {
     pub window_move_modifier: Option<String>,
+    pub window_resize_modifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

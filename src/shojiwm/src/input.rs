@@ -881,6 +881,18 @@ impl ShojiWM {
                             .as_ref()
                             .map(|(surface, _)| surface.clone());
                         self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+
+                        //temporarily move the pointer focus off the client to prevent click passthrough
+                        pointer.motion(
+                            self,
+                            None,
+                            &MotionEvent {
+                                location: pointer.current_location(),
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+
                         pointer.button(
                             self,
                             &ButtonEvent {
@@ -920,6 +932,106 @@ impl ShojiWM {
                         let _ = self.display_handle.flush_clients();
                         self.schedule_redraw();
                         return;
+                    }
+
+                    if button == 273
+                        && layer_under_pointer.is_none()
+                        && self.runtime_window_resize_modifier.is_some_and(|modifier| {
+                            modifier.matches(&self.current_keyboard_modifiers)
+                        })
+                        && let Some(window) = self
+                            .window_under_transformed(LogicalPoint::new(
+                                pointer.current_location().x.floor() as i32,
+                                pointer.current_location().y.floor() as i32,
+                            ))
+                            .map(|(window, _)| window.clone())
+                        && self.pointer_allows_window_interaction(
+                            self.pointer_contents
+                                .surface
+                                .as_ref()
+                                .map(|(surface, _)| surface),
+                            &window,
+                        )
+                    {
+                        let focus_surface = self
+                            .pointer_contents
+                            .surface
+                            .as_ref()
+                            .map(|(surface, _)| surface.clone());
+                        self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
+
+                        //temporarily move the pointer focus off the client to prevent click passthrough
+                        pointer.motion(
+                            self,
+                            None,
+                            &MotionEvent {
+                                location: pointer.current_location(),
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button,
+                                state: button_state,
+                                serial,
+                                time: event.time_msec(),
+                            },
+                        );
+
+                        if let (Some(start_data), Some(initial_window_location)) = (
+                            pointer.grab_start_data(),
+                            self.space.element_location(&window),
+                        ) {
+                            let initial_window_size = window.geometry().size;
+                            let initial_window_rect = smithay::utils::Rectangle::new(
+                                initial_window_location,
+                                initial_window_size,
+                            );
+                            let initial_event_rect =
+                                self.managed_resize_initial_rect(&window, initial_window_rect);
+
+                            let pointer_loc = pointer.current_location();
+                            let window_rect = initial_window_rect;
+                            let center_x = window_rect.loc.x + window_rect.size.w / 2;
+                            let center_y = window_rect.loc.y + window_rect.size.h / 2;
+
+                            let mut edges = ResizeEdge::empty();
+                            if pointer_loc.x < center_x as f64 {
+                                edges |= ResizeEdge::LEFT;
+                            } else {
+                                edges |= ResizeEdge::RIGHT;
+                            }
+                            if pointer_loc.y < center_y as f64 {
+                                edges |= ResizeEdge::TOP;
+                            } else {
+                                edges |= ResizeEdge::BOTTOM;
+                            }
+
+                            if let Some(mut grab) = ResizeSurfaceGrab::start(
+                                start_data,
+                                window,
+                                edges,
+                                initial_window_rect,
+                                initial_event_rect,
+                                WindowResizeSourceSnapshot::Modifier,
+                            ) {
+                                grab.notify_start(self);
+                                pointer.set_grab(
+                                    self,
+                                    grab,
+                                    serial,
+                                    smithay::input::pointer::Focus::Clear,
+                                );
+                            }
+
+                            pointer.frame(self);
+                            let _ = self.display_handle.flush_clients();
+                            self.schedule_redraw();
+                            return;
+                        }
                     }
 
                     if layer_under_pointer.is_none()
