@@ -10,10 +10,16 @@ use smithay::{
     desktop::{Window, WindowSurfaceType},
     input::{
         keyboard::{FilterResult, keysyms},
-        pointer::{AxisFrame, ButtonEvent, CursorIcon, MotionEvent, RelativeMotionEvent},
+        pointer::{
+            AxisFrame, ButtonEvent, CursorIcon, GrabStartData as PointerGrabStartData, MotionEvent,
+            RelativeMotionEvent,
+        },
     },
-    reexports::{wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::Resource},
-    utils::{SERIAL_COUNTER, Serial},
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    },
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
     wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint},
 };
 use std::time::Instant;
@@ -41,6 +47,18 @@ enum KeyboardAction {
     RuntimeKeyBinding(String),
     LogMarker(u8),
     ChangeVt(i32),
+}
+
+fn compositor_pointer_grab_start_data(
+    focus: Option<(WlSurface, Point<f64, Logical>)>,
+    button: u32,
+    location: Point<f64, Logical>,
+) -> PointerGrabStartData<ShojiWM> {
+    PointerGrabStartData {
+        focus,
+        button,
+        location,
+    }
 }
 
 fn layer_focus_debug_enabled() -> bool {
@@ -880,32 +898,15 @@ impl ShojiWM {
                             .surface
                             .as_ref()
                             .map(|(surface, _)| surface.clone());
+                        let start_data = compositor_pointer_grab_start_data(
+                            self.pointer_contents.surface.clone(),
+                            button,
+                            pointer.current_location(),
+                        );
                         self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
 
-                        //temporarily move the pointer focus off the client to prevent click passthrough
-                        pointer.motion(
-                            self,
-                            None,
-                            &MotionEvent {
-                                location: pointer.current_location(),
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-
-                        pointer.button(
-                            self,
-                            &ButtonEvent {
-                                button,
-                                state: button_state,
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-                        if let (Some(start_data), Some(initial_window_location)) = (
-                            pointer.grab_start_data(),
-                            self.space.element_location(&window),
-                        ) {
+                        if let Some(initial_window_location) = self.space.element_location(&window)
+                        {
                             let initial_window_rect = smithay::utils::Rectangle::new(
                                 initial_window_location,
                                 window.geometry().size,
@@ -958,33 +959,15 @@ impl ShojiWM {
                             .surface
                             .as_ref()
                             .map(|(surface, _)| surface.clone());
+                        let start_data = compositor_pointer_grab_start_data(
+                            self.pointer_contents.surface.clone(),
+                            button,
+                            pointer.current_location(),
+                        );
                         self.focus_window_at_surface(&window, focus_surface.as_ref(), serial);
 
-                        //temporarily move the pointer focus off the client to prevent click passthrough
-                        pointer.motion(
-                            self,
-                            None,
-                            &MotionEvent {
-                                location: pointer.current_location(),
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-
-                        pointer.button(
-                            self,
-                            &ButtonEvent {
-                                button,
-                                state: button_state,
-                                serial,
-                                time: event.time_msec(),
-                            },
-                        );
-
-                        if let (Some(start_data), Some(initial_window_location)) = (
-                            pointer.grab_start_data(),
-                            self.space.element_location(&window),
-                        ) {
+                        if let Some(initial_window_location) = self.space.element_location(&window)
+                        {
                             let initial_window_size = window.geometry().size;
                             let initial_window_rect = smithay::utils::Rectangle::new(
                                 initial_window_location,
@@ -1185,19 +1168,14 @@ impl ShojiWM {
                                 }
                             }
                             DecorationHitTestResult::Move => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
+                                let start_data = compositor_pointer_grab_start_data(
+                                    self.pointer_contents.surface.clone(),
+                                    button,
+                                    pointer.current_location(),
                                 );
-                                if let (Some(start_data), Some(initial_window_location)) = (
-                                    pointer.grab_start_data(),
-                                    self.space.element_location(&window),
-                                ) {
+                                if let Some(initial_window_location) =
+                                    self.space.element_location(&window)
+                                {
                                     let initial_window_rect = smithay::utils::Rectangle::new(
                                         initial_window_location,
                                         window.geometry().size,
@@ -1221,19 +1199,14 @@ impl ShojiWM {
                                 }
                             }
                             DecorationHitTestResult::Resize(edges) => {
-                                pointer.button(
-                                    self,
-                                    &ButtonEvent {
-                                        button,
-                                        state: button_state,
-                                        serial,
-                                        time: event.time_msec(),
-                                    },
+                                let start_data = compositor_pointer_grab_start_data(
+                                    self.pointer_contents.surface.clone(),
+                                    button,
+                                    pointer.current_location(),
                                 );
-                                if let (Some(start_data), Some(initial_window_location)) = (
-                                    pointer.grab_start_data(),
-                                    self.space.element_location(&window),
-                                ) {
+                                if let Some(initial_window_location) =
+                                    self.space.element_location(&window)
+                                {
                                     let initial_window_size = window.geometry().size;
                                     if let Some(toplevel) = window.toplevel() {
                                         toplevel.with_pending_state(|state| {
