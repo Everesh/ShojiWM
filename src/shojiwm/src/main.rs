@@ -29,9 +29,11 @@ pub mod runtime_input;
 pub mod runtime_key_binding;
 pub mod runtime_pointer;
 pub mod runtime_process;
+pub mod runtime_workspace;
 pub mod ssd;
 pub mod state;
 pub mod wlr_foreign_toplevel;
+pub mod workspace_manager;
 pub mod xwayland_satellite;
 
 #[global_allocator]

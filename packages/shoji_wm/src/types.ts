@@ -22,9 +22,7 @@ export type WaylandLayerKind = "background" | "bottom" | "top" | "overlay";
 export type WaylandLayerEdge = "top" | "bottom" | "left" | "right";
 
 export type WaylandLayerKeyboardInteractivity =
-  | "none"
-  | "onDemand"
-  | "exclusive";
+  "none" | "onDemand" | "exclusive";
 
 /**
  * Anchored edges. `true` for each edge the client requested. A layer with all
@@ -321,10 +319,7 @@ export interface ManagedWindowPoint {
 }
 
 export type ManagedWindowAnimationMode =
-  | "override"
-  | "add"
-  | "sub"
-  | "multiply";
+  "override" | "add" | "sub" | "multiply";
 
 export type ManagedWindowAnimationEasing =
   | "linear"
@@ -417,11 +412,7 @@ export interface CompositionElementNode {
 
 export type CompositionChild = CompositionElementNode | PrimitiveChild;
 export type CompositionRenderable =
-  | CompositionChild
-  | null
-  | undefined
-  | false
-  | true;
+  CompositionChild | null | undefined | false | true;
 
 export type CompositionNodeType =
   | "Box"
@@ -468,8 +459,7 @@ export interface AlwaysInvalidationHandle {
 }
 
 export type AutomaticEffectInvalidationPolicyHandle =
-  | OnSourceDamageBoxInvalidationHandle
-  | AlwaysInvalidationHandle;
+  OnSourceDamageBoxInvalidationHandle | AlwaysInvalidationHandle;
 
 export interface ManualInvalidationHandle {
   kind: "manual";
@@ -478,8 +468,7 @@ export interface ManualInvalidationHandle {
 }
 
 export type EffectInvalidationPolicyHandle =
-  | AutomaticEffectInvalidationPolicyHandle
-  | ManualInvalidationHandle;
+  AutomaticEffectInvalidationPolicyHandle | ManualInvalidationHandle;
 export type ShaderUniformScalar = MaybeSignal<number>;
 export type ShaderUniformValue =
   | ShaderUniformScalar
@@ -626,9 +615,7 @@ export interface LayerSourceHandle {
 }
 
 export type LayerEffectInputHandle =
-  | LayerSourceHandle
-  | BackdropSourceHandle
-  | XrayBackdropSourceHandle;
+  LayerSourceHandle | BackdropSourceHandle | XrayBackdropSourceHandle;
 
 /** The popup's own rendered content as an effect input. */
 export interface PopupSourceHandle {
@@ -837,9 +824,7 @@ export interface OutputMirrorConfigEntry {
 }
 
 export type OutputConfigEntry =
-  | OutputExtendConfigEntry
-  | OutputDisabledConfigEntry
-  | OutputMirrorConfigEntry;
+  OutputExtendConfigEntry | OutputDisabledConfigEntry | OutputMirrorConfigEntry;
 
 export type DisplayConfigDraft = Record<string, OutputConfigEntry | null>;
 
@@ -924,6 +909,65 @@ export interface OutputController {
    * 登録済みの `configure` ファクトリーを即時再実行します。
    */
   reconfigure(): void;
+}
+
+export interface WorkspaceConfigEntry {
+  /** Stable protocol id. / protocol 上の安定 ID。 */
+  id: string;
+  /** Human-readable workspace label. / 表示用のワークスペース名。 */
+  name: string;
+  /** Optional N-dimensional coordinates. / 任意の N 次元座標。 */
+  coordinates?: number[];
+  /** Whether this workspace is active in its group. / グループ内でアクティブか。 */
+  active?: boolean;
+  /** Whether this workspace requests attention. / 注意要求状態か。 */
+  urgent?: boolean;
+  /** Whether bars should hide this workspace. / バー側で非表示扱いにするか。 */
+  hidden?: boolean;
+}
+
+export interface WorkspaceGroupConfig {
+  /** Stable group id, usually an output name. / 安定したグループ ID。通常は出力名。 */
+  id: string;
+  /** Output names assigned to this workspace group. / このグループに属する出力名。 */
+  outputs: string[];
+  /** Workspaces in this group. / このグループ内のワークスペース。 */
+  workspaces: WorkspaceConfigEntry[];
+}
+
+export interface WorkspaceConfig {
+  groups: WorkspaceGroupConfig[];
+}
+
+export type WorkspaceConfigureFactory = () => WorkspaceConfig;
+
+export interface WorkspaceActivateEvent {
+  groupId?: string;
+  workspaceId: string;
+}
+
+export interface WorkspaceController {
+  /**
+   * Registers a factory that describes the compositor workspace model exposed
+   * through `ext_workspace_manager_v1`.
+   * `ext_workspace_manager_v1` で公開するワークスペースモデルを返す
+   * ファクトリーを登録します。
+   */
+  configure(factory: WorkspaceConfigureFactory): void;
+  /**
+   * Re-runs the registered workspace factory immediately.
+   * 登録済みのワークスペースファクトリーを即時再実行します。
+   */
+  reconfigure(): void;
+  event: {
+    /**
+     * Called when an external client such as Waybar asks to activate a
+     * workspace.
+     * Waybar などの外部クライアントがワークスペース activate を要求したときに
+     * 呼ばれます。
+     */
+    onActivate(listener: (event: WorkspaceActivateEvent) => void): () => void;
+  };
 }
 
 /** Logical-pixel insets reserved by exclusive-zone layers on each edge. */
@@ -1055,8 +1099,7 @@ export interface ProcessBaseSpec {
 }
 
 export type StartupProcessRunPolicy =
-  | "once-per-session"
-  | "once-per-config-version";
+  "once-per-session" | "once-per-config-version";
 
 export type ManagedProcessRestartPolicy = "never" | "on-failure" | "on-exit";
 
@@ -1855,6 +1898,11 @@ export interface CompositorDefinition {
    */
   output: OutputController;
   /**
+   * Workspace model exposed to external bars through `ext_workspace_manager_v1`.
+   * `ext_workspace_manager_v1` 経由で外部バーへ公開するワークスペースモデル。
+   */
+  workspace: WorkspaceController;
+  /**
    * Input device enumeration and per-device configuration.
    * 入力デバイスの列挙とデバイスごとの設定。
    *
@@ -2012,11 +2060,7 @@ export interface DebugController {
 }
 
 export type SSDRebuildSuppressionViolationPolicy =
-  | "warn"
-  | "fallback-last"
-  | "fallback"
-  | "throw"
-  | "suppress-unsafe";
+  "warn" | "fallback-last" | "fallback" | "throw" | "suppress-unsafe";
 
 export interface SSDRebuildSuppressionOptions {
   /**
@@ -2186,8 +2230,7 @@ export interface WindowActionDescriptor {
 }
 
 export type SerializableCompositionChild =
-  | SerializedCompositionNode
-  | PrimitiveChild;
+  SerializedCompositionNode | PrimitiveChild;
 
 export interface SerializedCompositionNode {
   kind: CompositionNodeType;

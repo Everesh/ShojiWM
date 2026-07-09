@@ -27,11 +27,13 @@ import {
   beginOutputConfigurationRegistration,
   beginPointerConfigRegistration,
   beginProcessConfigRegistration,
+  beginWorkspaceConfigurationRegistration,
   commitKeyBindingRegistration,
   commitInputConfigurationRegistration,
   commitOutputConfigurationRegistration,
   commitPointerConfigRegistration,
   commitProcessConfigRegistration,
+  commitWorkspaceConfigurationRegistration,
   drainPendingProcessActions,
   drainPendingEnvUpdates,
   hasActiveAnimations,
@@ -61,6 +63,7 @@ import {
   takePendingInputConfig,
   takePendingPointerConfig,
   takePendingProcessConfig,
+  takePendingWorkspaceConfig,
   leaveWindowEffectDependencyScope,
   leaveLayerDependencyScope,
   read,
@@ -76,6 +79,8 @@ import {
   type InputDeviceInfo,
   type WindowCompositionFunction,
   type OutputStateSnapshot,
+  type WorkspaceConfig,
+  emitWorkspaceActivate,
   type PollCallback,
   type PollDirtyMode,
   type PollHandle,
@@ -405,6 +410,16 @@ interface LifecycleDisableRequest {
   displayState: Record<string, OutputStateSnapshot>;
 }
 
+interface WorkspaceActivateRequest {
+  requestId: number;
+  kind: "workspaceActivate";
+  workspaceId: string;
+  groupId?: string;
+  nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
+  inputState?: Record<string, InputDeviceInfo>;
+}
+
 type RuntimeRequest =
   | DrainPreloadRequest
   | EvaluateRequest
@@ -427,7 +442,8 @@ type RuntimeRequest =
   | EvaluateLayerEffectsRequest
   | EvaluatePopupEffectsRequest
   | LifecycleEnableRequest
-  | LifecycleDisableRequest;
+  | LifecycleDisableRequest
+  | WorkspaceActivateRequest;
 
 type RuntimeRequestWithTimestamp = Extract<RuntimeRequest, { nowMs: number }>;
 
@@ -450,6 +466,7 @@ interface EvaluateSuccess {
   // before the open animation kicks in.
   actions?: RuntimeWindowAction[];
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -476,6 +493,7 @@ interface SchedulerTickSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -490,6 +508,7 @@ interface WindowClosedSuccess {
   ok: true;
   kind: "windowClosed";
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -571,6 +590,7 @@ interface InvokeHandlerSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -592,6 +612,7 @@ interface InvokeKeyBindingSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -614,6 +635,7 @@ interface WindowResizeSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -634,6 +656,7 @@ interface WindowMoveSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -658,6 +681,7 @@ interface WindowStateRequestSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -680,6 +704,7 @@ interface StartCloseSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -700,6 +725,7 @@ interface PointerMoveAsyncSuccess {
   actions: RuntimeWindowAction[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -714,6 +740,7 @@ interface GetEffectConfigSuccess {
   kind: "getEffectConfig";
   backgroundEffect?: CompiledEffectHandle | null;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   processConfig?: { entries: RuntimeProcessConfigEntry[] };
   processActions?: RuntimeProcessSpawnAction[];
 }
@@ -725,6 +752,7 @@ interface EvaluateLayerEffectsSuccess {
   effects: RuntimeLayerEffectAssignment[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -739,6 +767,7 @@ interface EvaluatePopupEffectsSuccess {
   effects: RuntimePopupEffectAssignment[];
   nextPollInMs?: number;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   inputConfig?: { config: InputConfigDraft };
@@ -752,6 +781,7 @@ interface LifecycleEnableSuccess {
   ok: true;
   kind: "lifecycleEnable";
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
   keyBindingConfig?: { entries: RuntimeKeyBindingConfigEntry[] };
   pointerConfig?: RuntimePointerConfig;
   eventConfig?: RuntimeEventConfig;
@@ -772,6 +802,7 @@ interface RuntimeFailure {
   kind?: RuntimeRequest["kind"];
   error: string;
   displayConfig?: { outputs: DisplayConfigDraft };
+  workspaceConfig?: WorkspaceConfig;
 }
 
 interface RuntimeLayerEffectAssignment {
@@ -823,34 +854,32 @@ interface RuntimePointerConfig {
 }
 
 function pendingDisplayConfigPayload():
-  | { outputs: DisplayConfigDraft }
-  | undefined {
+  { outputs: DisplayConfigDraft } | undefined {
   const outputs = takePendingDisplayConfig();
   return outputs ? { outputs } : undefined;
 }
 
+function pendingWorkspaceConfigPayload(): WorkspaceConfig | undefined {
+  return takePendingWorkspaceConfig();
+}
+
 function pendingProcessConfigPayload():
-  | { entries: RuntimeProcessConfigEntry[] }
-  | undefined {
+  { entries: RuntimeProcessConfigEntry[] } | undefined {
   const entries = takePendingProcessConfig() as
-    | RuntimeProcessConfigEntry[]
-    | undefined;
+    RuntimeProcessConfigEntry[] | undefined;
   return entries ? { entries } : undefined;
 }
 
 function pendingProcessActionsPayload():
-  | RuntimeProcessSpawnAction[]
-  | undefined {
+  RuntimeProcessSpawnAction[] | undefined {
   const actions = drainPendingProcessActions() as RuntimeProcessSpawnAction[];
   return actions.length > 0 ? actions : undefined;
 }
 
 function pendingKeyBindingConfigPayload():
-  | { entries: RuntimeKeyBindingConfigEntry[] }
-  | undefined {
+  { entries: RuntimeKeyBindingConfigEntry[] } | undefined {
   const entries = takePendingKeyBindingConfig() as
-    | RuntimeKeyBindingConfigEntry[]
-    | undefined;
+    RuntimeKeyBindingConfigEntry[] | undefined;
   return entries ? { entries } : undefined;
 }
 
@@ -1071,12 +1100,14 @@ async function main() {
     if (!loadedConfig) {
       beginKeyBindingRegistration();
       beginOutputConfigurationRegistration();
+      beginWorkspaceConfigurationRegistration();
       beginInputConfigurationRegistration();
       beginPointerConfigRegistration();
       beginProcessConfigRegistration();
       loadedConfig = (await import(moduleUrl).finally(() => {
         commitKeyBindingRegistration();
         commitOutputConfigurationRegistration();
+        commitWorkspaceConfigurationRegistration();
         commitInputConfigurationRegistration();
         commitPointerConfigRegistration();
         commitProcessConfigRegistration();
@@ -1173,6 +1204,7 @@ async function main() {
             break;
           case "lifecycleEnable":
           case "lifecycleDisable":
+          case "workspaceActivate":
             break;
         }
       }
@@ -1217,6 +1249,47 @@ async function main() {
           ok: true,
           kind: "lifecycleEnable",
           displayConfig: pendingDisplayConfigPayload(),
+          workspaceConfig: pendingWorkspaceConfigPayload(),
+          keyBindingConfig,
+          pointerConfig,
+          inputConfig,
+          eventConfig,
+          processConfig,
+          processActions,
+        });
+      } else if (request.kind === "workspaceActivate") {
+        const runtimeConfig = await loadRuntimeConfig();
+        const invoked = emitWorkspaceActivate({
+          workspaceId: request.workspaceId,
+          groupId: request.groupId,
+        });
+        const mutation = invoked
+          ? collectRuntimeMutationState()
+          : {
+              dirtyWindowIds: [],
+              dirtyManagedWindowIds: undefined,
+              dirtyWindowNodeIds: undefined,
+              actions: [],
+              nextPollInMs: peekNextPollDelay(),
+            };
+        const keyBindingConfig = pendingKeyBindingConfigPayload();
+        const pointerConfig = pendingPointerConfigPayload();
+        const inputConfig = pendingInputConfigPayload();
+        const eventConfig = pendingEventConfigPayload(runtimeConfig.events);
+        const processConfig = pendingProcessConfigPayload();
+        const processActions = pendingProcessActionsPayload();
+        await writeResponse(output, {
+          requestId: request.requestId,
+          ok: true,
+          kind: "invokeHandler",
+          invoked,
+          dirtyWindowIds: mutation.dirtyWindowIds,
+          dirtyManagedWindowIds: mutation.dirtyManagedWindowIds,
+          dirtyWindowNodeIds: mutation.dirtyWindowNodeIds,
+          actions: mutation.actions,
+          nextPollInMs: hasActiveAnimations() ? 0 : mutation.nextPollInMs,
+          displayConfig: pendingDisplayConfigPayload(),
+          workspaceConfig: pendingWorkspaceConfigPayload(),
           keyBindingConfig,
           pointerConfig,
           inputConfig,
@@ -1324,6 +1397,7 @@ async function main() {
             actions:
               evaluationActions.length > 0 ? evaluationActions : undefined,
             displayConfig: pendingDisplayConfigPayload(),
+            workspaceConfig: pendingWorkspaceConfigPayload(),
             keyBindingConfig,
             pointerConfig,
             inputConfig,
@@ -1354,6 +1428,7 @@ async function main() {
               actions: tick.actions,
               nextPollInMs: hasActiveAnimations() ? 0 : tick.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1374,6 +1449,7 @@ async function main() {
               ok: true,
               kind: "windowClosed",
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1393,6 +1469,7 @@ async function main() {
               kind: "startClose",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1436,6 +1513,7 @@ async function main() {
               nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
               actions: cachedActions.length > 0 ? cachedActions : undefined,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1449,6 +1527,7 @@ async function main() {
               kind: "getEffectConfig",
               backgroundEffect: effectConfig.background_effect,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
             });
           } else if (request.kind === "evaluateLayerEffects") {
             const result = evaluateLayerEffects(
@@ -1469,6 +1548,7 @@ async function main() {
               effects: result.effects,
               nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1494,6 +1574,7 @@ async function main() {
               effects: result.effects,
               nextPollInMs: hasActiveAnimations() ? 0 : result.nextPollInMs,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1515,6 +1596,7 @@ async function main() {
               kind: "invokeKeyBinding",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1539,6 +1621,7 @@ async function main() {
               kind: "windowResize",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1563,6 +1646,7 @@ async function main() {
               kind: "windowMove",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1590,6 +1674,7 @@ async function main() {
               kind: "windowMaximizeRequest",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1617,6 +1702,7 @@ async function main() {
               kind: "windowMinimizeRequest",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1644,6 +1730,7 @@ async function main() {
               kind: "windowFullscreenRequest",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1671,6 +1758,7 @@ async function main() {
               kind: "windowActivateRequest",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1692,6 +1780,7 @@ async function main() {
               kind: "pointerMoveAsync",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1713,6 +1802,7 @@ async function main() {
               kind: "gestureSwipeAsync",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1737,6 +1827,7 @@ async function main() {
               kind: "invokeHandler",
               ...result,
               displayConfig: pendingDisplayConfigPayload(),
+              workspaceConfig: pendingWorkspaceConfigPayload(),
               keyBindingConfig,
               pointerConfig,
               inputConfig,
@@ -1756,6 +1847,7 @@ async function main() {
             ? (error.stack ?? error.message)
             : String(error),
         displayConfig: pendingDisplayConfigPayload(),
+        workspaceConfig: pendingWorkspaceConfigPayload(),
       });
     }
   }

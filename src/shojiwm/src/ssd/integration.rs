@@ -574,6 +574,17 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         }
     }
 
+    fn workspace_activate(
+        &self,
+        event: &crate::runtime_workspace::RuntimeWorkspaceActivateRequestSnapshot,
+        now_ms: u64,
+    ) -> Result<super::DecorationHandlerInvocation, DecorationEvaluationError> {
+        match self {
+            Self::Static(_) => Ok(super::DecorationHandlerInvocation::default()),
+            Self::Node(evaluator) => evaluator.workspace_activate(event, now_ms),
+        }
+    }
+
     fn window_resize(
         &self,
         window_id: &str,
@@ -960,6 +971,7 @@ impl ShojiWM {
         };
 
         self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_workspace_config(invocation.workspace_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
         self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_input_config(invocation.input_config);
@@ -1011,6 +1023,7 @@ impl ShojiWM {
         };
 
         self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_workspace_config(invocation.workspace_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
         self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_input_config(invocation.input_config);
@@ -1145,6 +1158,7 @@ impl ShojiWM {
         invocation: super::evaluator::DecorationWindowStateRequestInvocation,
     ) -> bool {
         self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_workspace_config(invocation.workspace_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
         self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_input_config(invocation.input_config);
@@ -1224,6 +1238,7 @@ impl ShojiWM {
         self.sync_runtime_display_state();
         let invocation = self.decoration_evaluator.start_close(window_id, now_ms)?;
         self.consume_runtime_display_config(invocation.display_config.clone());
+        self.consume_runtime_workspace_config(invocation.workspace_config.clone());
         self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
         self.consume_runtime_pointer_config(invocation.pointer_config.clone());
         self.consume_runtime_input_config(invocation.input_config.clone());
@@ -1356,6 +1371,7 @@ impl ShojiWM {
             .evaluate_window_preview(snapshot, now_ms)?;
 
         self.consume_runtime_display_config(evaluation.display_config.clone());
+        self.consume_runtime_workspace_config(evaluation.workspace_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
         self.consume_runtime_pointer_config(evaluation.pointer_config.clone());
         self.consume_runtime_input_config(evaluation.input_config.clone());
@@ -2051,6 +2067,7 @@ impl ShojiWM {
         let evaluate_elapsed_ms = evaluate_started_at.elapsed().as_secs_f64() * 1000.0;
         let apply_started_at = Instant::now();
         self.consume_runtime_display_config(evaluation.display_config.clone());
+        self.consume_runtime_workspace_config(evaluation.workspace_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
         self.consume_runtime_pointer_config(evaluation.pointer_config.clone());
         self.consume_runtime_input_config(evaluation.input_config.clone());
@@ -2158,6 +2175,7 @@ impl ShojiWM {
             self.decoration_evaluator
                 .evaluate_popup_effects(output_name, &snapshots, now_ms)?;
         self.consume_runtime_display_config(evaluation.display_config.clone());
+        self.consume_runtime_workspace_config(evaluation.workspace_config.clone());
         self.consume_runtime_key_binding_config(evaluation.key_binding_config.clone());
         self.consume_runtime_pointer_config(evaluation.pointer_config.clone());
         self.consume_runtime_input_config(evaluation.input_config.clone());

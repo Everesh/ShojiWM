@@ -3989,6 +3989,7 @@ dependencies = [
  "timescope",
  "tracing",
  "tracing-subscriber",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "xcursor",
  "xkbcommon",

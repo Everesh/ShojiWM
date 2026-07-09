@@ -48,11 +48,7 @@ use smithay::{
             LoopHandle,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{
-            ModeTypeFlags, 
-            connector,
-            crtc,
-        },
+        drm::control::{ModeTypeFlags, connector, crtc},
         gbm::{BufferObjectFlags, Device, Format},
         rustix::fs::OFlags,
         wayland_protocols::wp::{

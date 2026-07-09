@@ -105,6 +105,7 @@ use crate::runtime_process::{
     RuntimeProcessReloadPolicy, RuntimeProcessRestartPolicy, RuntimeProcessRunPolicy,
     kill_runtime_service, should_restart_service, spawn_runtime_process,
 };
+use crate::runtime_workspace::RuntimeWorkspaceConfigUpdate;
 use crate::ssd::{
     BackgroundEffectConfig, DecorationEvaluator, DecorationHandlerInvocation,
     DecorationInteractionSnapshot, DecorationInteractionTarget,
@@ -256,6 +257,7 @@ pub struct ShojiWM {
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub wlr_foreign_toplevel_manager_state:
         crate::wlr_foreign_toplevel::WlrForeignToplevelManagerState,
+    pub ext_workspace_manager_state: crate::workspace_manager::ExtWorkspaceManagerState,
     pub image_capture_source_state: smithay::wayland::image_capture_source::ImageCaptureSourceState,
     pub output_capture_source_state:
         smithay::wayland::image_capture_source::OutputCaptureSourceState,
@@ -963,6 +965,8 @@ impl ShojiWM {
             smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(&dh);
         let wlr_foreign_toplevel_manager_state =
             crate::wlr_foreign_toplevel::WlrForeignToplevelManagerState::new::<Self>(&dh);
+        let ext_workspace_manager_state =
+            crate::workspace_manager::ExtWorkspaceManagerState::new::<Self>(&dh);
         let image_capture_source_state =
             smithay::wayland::image_capture_source::ImageCaptureSourceState::new();
         let output_capture_source_state =
@@ -1145,6 +1149,7 @@ impl ShojiWM {
             tearing_control_state,
             foreign_toplevel_list_state,
             wlr_foreign_toplevel_manager_state,
+            ext_workspace_manager_state,
             image_capture_source_state,
             output_capture_source_state,
             toplevel_capture_source_state,
@@ -1727,6 +1732,7 @@ impl ShojiWM {
         }
 
         self.consume_runtime_display_config(tick.display_config);
+        self.consume_runtime_workspace_config(tick.workspace_config);
         self.consume_runtime_key_binding_config(tick.key_binding_config);
         self.consume_runtime_pointer_config(tick.pointer_config);
         self.consume_runtime_input_config(tick.input_config);
@@ -1797,6 +1803,14 @@ impl ShojiWM {
         }
     }
 
+    pub(crate) fn schedule_runtime_scheduler_kick_from_state(
+        &mut self,
+        next_poll_in_ms: Option<u64>,
+    ) {
+        let loop_handle = self.loop_handle.clone();
+        self.schedule_runtime_scheduler_kick(&loop_handle, next_poll_in_ms);
+    }
+
     fn register_runtime_wake_signal(event_loop: &mut EventLoop<'static, Self>) {
         use calloop::signals::{Signal, Signals};
 
@@ -1858,6 +1872,7 @@ impl ShojiWM {
         match self.decoration_evaluator.evaluate_window(&snapshot, now_ms) {
             Ok(result) => {
                 self.consume_runtime_display_config(result.display_config);
+                self.consume_runtime_workspace_config(result.workspace_config);
                 self.consume_runtime_key_binding_config(result.key_binding_config);
                 self.consume_runtime_pointer_config(result.pointer_config);
                 self.consume_runtime_input_config(result.input_config);
@@ -2504,6 +2519,7 @@ impl ShojiWM {
         invocation: DecorationHandlerInvocation,
     ) {
         self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_workspace_config(invocation.workspace_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
         self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_input_config(invocation.input_config);
@@ -2511,6 +2527,17 @@ impl ShojiWM {
         self.consume_runtime_process_config(invocation.process_config);
         if !invocation.process_actions.is_empty() {
             self.apply_runtime_process_actions(invocation.process_actions);
+        }
+    }
+
+    pub fn consume_runtime_workspace_config(
+        &mut self,
+        update: Option<RuntimeWorkspaceConfigUpdate>,
+    ) {
+        if let Some(update) = update {
+            let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+            self.ext_workspace_manager_state
+                .sync::<Self>(update, &self.display_handle, &outputs);
         }
     }
 
@@ -2568,6 +2595,7 @@ impl ShojiWM {
         }
 
         self.consume_runtime_display_config(invocation.display_config);
+        self.consume_runtime_workspace_config(invocation.workspace_config);
         self.consume_runtime_key_binding_config(invocation.key_binding_config);
         self.consume_runtime_pointer_config(invocation.pointer_config);
         self.consume_runtime_input_config(invocation.input_config);

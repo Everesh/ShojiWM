@@ -194,6 +194,7 @@ impl ShojiWM {
         {
             Ok(invocation) => {
                 self.consume_runtime_display_config(invocation.display_config);
+                self.consume_runtime_workspace_config(invocation.workspace_config);
                 self.consume_runtime_key_binding_config(invocation.key_binding_config);
                 self.consume_runtime_pointer_config(invocation.pointer_config);
                 self.consume_runtime_input_config(invocation.input_config);
@@ -1133,6 +1134,9 @@ impl ShojiWM {
                                 ) {
                                     self.consume_runtime_display_config(
                                         invocation.display_config.clone(),
+                                    );
+                                    self.consume_runtime_workspace_config(
+                                        invocation.workspace_config.clone(),
                                     );
                                     self.consume_runtime_key_binding_config(
                                         invocation.key_binding_config.clone(),
@@ -2401,6 +2405,7 @@ impl ShojiWM {
         };
 
         self.consume_runtime_display_config(invocation.display_config.clone());
+        self.consume_runtime_workspace_config(invocation.workspace_config.clone());
         self.consume_runtime_key_binding_config(invocation.key_binding_config.clone());
         self.consume_runtime_pointer_config(invocation.pointer_config.clone());
         self.consume_runtime_input_config(invocation.input_config.clone());

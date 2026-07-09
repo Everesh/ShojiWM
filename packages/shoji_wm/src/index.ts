@@ -59,6 +59,12 @@ import type {
   OutputPositionPreference,
   OutputResolutionPreference,
   OutputStateSnapshot,
+  WorkspaceActivateEvent,
+  WorkspaceConfig,
+  WorkspaceConfigEntry,
+  WorkspaceConfigureFactory,
+  WorkspaceController,
+  WorkspaceGroupConfig,
   EnvController,
   EnvUpdateOperation,
   EnvUpdatePayload,
@@ -167,6 +173,7 @@ import {
 } from "./pointer";
 import { INPUT_CONTROLLER, installInputDeviceChangeEmitter } from "./input";
 import { OUTPUT_CONTROLLER, installOutputChangeEmitter } from "./output";
+import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 import { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
@@ -313,6 +320,13 @@ export {
   takePendingDisplayConfig,
   updateOutputState,
 } from "./output";
+export {
+  WORKSPACE_CONTROLLER,
+  beginWorkspaceConfigurationRegistration,
+  commitWorkspaceConfigurationRegistration,
+  emitWorkspaceActivate,
+  takePendingWorkspaceConfig,
+} from "./workspace";
 export { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
 export { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 export { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
@@ -816,6 +830,7 @@ function createCompositorDefinition(): CompositorDefinition {
       background_effect: null,
     },
     output: OUTPUT_CONTROLLER,
+    workspace: WORKSPACE_CONTROLLER,
     env: ENV_CONTROLLER,
     process: PROCESS_CONTROLLER,
     key: KEY_BINDING_CONTROLLER,
@@ -837,8 +852,7 @@ const shojiCompositorGlobal = globalThis as ShojiCompositorGlobal;
 
 export const COMPOSITOR: CompositorDefinition =
   shojiCompositorGlobal[COMPOSITOR_GLOBAL_KEY] ??
-  (shojiCompositorGlobal[COMPOSITOR_GLOBAL_KEY] =
-    createCompositorDefinition());
+  (shojiCompositorGlobal[COMPOSITOR_GLOBAL_KEY] = createCompositorDefinition());
 
 installOutputChangeEmitter((event) => {
   COMPOSITOR.event.emitOutputChange(event);

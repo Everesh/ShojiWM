@@ -100,8 +100,16 @@ function broadcastWorkspaces() {
   WORKSPACE_IPC.broadcast("workspaces.changed", view);
 }
 
+function reconfigureProtocolWorkspaces() {
+  COMPOSITOR.workspace.reconfigure();
+}
+
 // Coalesce many state mutations within one tick into a single diffed broadcast.
 function scheduleWorkspaceBroadcast() {
+  // Protocol state must be staged before the current runtime response is
+  // written; otherwise key bindings/Waybar activations only reach external
+  // bars on a later, unrelated runtime request.
+  reconfigureProtocolWorkspaces();
   if (workspaceBroadcastQueued) {
     return;
   }
@@ -111,6 +119,33 @@ function scheduleWorkspaceBroadcast() {
     broadcastWorkspaces();
   });
 }
+
+COMPOSITOR.workspace.configure(() => {
+  const view = HYBRID_WINDOW_MANAGER.viewForIpc();
+  return {
+    groups: view.monitors.map((monitor) => ({
+      id: monitor.name,
+      outputs: [monitor.name],
+      workspaces: monitor.workspaces.map((workspace) => ({
+        id: `${monitor.name}:${workspace.index}`,
+        name: String(workspace.index),
+        coordinates: [Math.max(0, workspace.index - 1)],
+        active: workspace.active,
+        hidden: !workspace.active && workspace.windowCount === 0,
+      })),
+    })),
+  };
+});
+
+COMPOSITOR.workspace.event.onActivate((event) => {
+  const [monitor, rawIndex] = event.workspaceId.split(":");
+  const index = Number(rawIndex);
+  if (!monitor || !Number.isInteger(index) || index < 1) {
+    return;
+  }
+  HYBRID_WINDOW_MANAGER.activate(monitor, index);
+  scheduleWorkspaceBroadcast();
+});
 
 WORKSPACE_IPC.handle("workspaces.get", () =>
   HYBRID_WINDOW_MANAGER.viewForIpc(),
@@ -230,12 +265,10 @@ COMPOSITOR.onDisable(() => {
   WORKSPACE_IPC.close();
 });
 
-
 COMPOSITOR.process.once("fcitx5", {
   command: "fcitx5 -d",
   runPolicy: "once-per-session",
 });
-
 
 // GTK_A11Y=none disables the AT-SPI accessibility bridge for the bar. A status
 // bar never needs a screen reader, and GTK 4.22's accessibility relation
@@ -263,13 +296,15 @@ COMPOSITOR.key.bind("terminal", "Super+T", () => {
 
 COMPOSITOR.key.bind("chrome", "Super+B", () => {
   COMPOSITOR.process.spawn({
-    command: "google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland"
+    command:
+      "google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland",
   });
 });
 
 COMPOSITOR.key.bind("discord", "Super+D", () => {
   COMPOSITOR.process.spawn({
-    command: "discord --enable-features=UseOzonePlatform --ozone-platform=wayland --enable-wayland-ime --disable-gpu"
+    command:
+      "discord --enable-features=UseOzonePlatform --ozone-platform=wayland --enable-wayland-ime --disable-gpu",
   });
 });
 
@@ -446,13 +481,13 @@ COMPOSITOR.input.configure((input, _context) => {
       options: "caps:ctrl_modifier",
       repeatRate: 60,
       repeatDelay: 250,
-    }
+    },
   };
 
   input.device["Razer Razer Blade Keyboard"] = {
     keyboard: {
       layout: "us",
-    }
+    },
   };
 });
 
@@ -497,7 +532,7 @@ COMPOSITOR.effect.layer = (layer) => {
 
   return {
     behind: LAYER_BLUR_MASK,
-  }
+  };
 };
 
 const POPUP_BLUR = compilePopupEffect({

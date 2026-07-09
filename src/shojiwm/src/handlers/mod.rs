@@ -861,3 +861,4 @@ impl crate::protocols::screencopy::ScreencopyHandler for ShojiWM {
 crate::delegate_screencopy!(ShojiWM);
 crate::delegate_tearing_control!(ShojiWM);
 crate::delegate_wlr_foreign_toplevel!(ShojiWM);
+crate::workspace_manager::delegate_ext_workspace_manager!(ShojiWM);

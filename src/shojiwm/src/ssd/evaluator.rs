@@ -33,6 +33,7 @@ use crate::{
     runtime_key_binding::RuntimeKeyBindingConfigUpdate,
     runtime_pointer::RuntimePointerConfigUpdate,
     runtime_process::{RuntimeProcessAction, RuntimeProcessConfigUpdate},
+    runtime_workspace::{RuntimeWorkspaceActivateRequestSnapshot, RuntimeWorkspaceConfigUpdate},
 };
 use smithay::reexports::calloop::channel::Sender as CalloopSender;
 
@@ -107,6 +108,14 @@ pub trait DecorationEvaluator {
         _now_ms: u64,
     ) -> Result<DecorationKeyBindingInvocation, DecorationEvaluationError> {
         Ok(DecorationKeyBindingInvocation::default())
+    }
+
+    fn workspace_activate(
+        &self,
+        _event: &RuntimeWorkspaceActivateRequestSnapshot,
+        _now_ms: u64,
+    ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
+        Ok(DecorationHandlerInvocation::default())
     }
 
     fn window_resize(
@@ -201,6 +210,7 @@ pub struct DecorationEvaluationResult {
     /// before open / first-commit animations kick in.
     pub actions: Vec<RuntimeWindowAction>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -221,6 +231,7 @@ pub struct DecorationCachedEvaluationResult {
     /// See `DecorationEvaluationResult::actions`. Same role on the cached path.
     pub actions: Vec<RuntimeWindowAction>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -241,6 +252,7 @@ impl From<DecorationEvaluationResult> for DecorationCachedEvaluationResult {
             next_poll_in_ms: result.next_poll_in_ms,
             actions: result.actions,
             display_config: result.display_config,
+            workspace_config: result.workspace_config,
             key_binding_config: result.key_binding_config,
             pointer_config: result.pointer_config,
             input_config: result.input_config,
@@ -261,6 +273,7 @@ pub struct DecorationSchedulerTick {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -283,6 +296,7 @@ pub struct DecorationHandlerInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -302,6 +316,7 @@ pub struct DecorationKeyBindingInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -322,6 +337,7 @@ pub struct DecorationWindowResizeInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -341,6 +357,7 @@ pub struct DecorationWindowMoveInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -360,6 +377,7 @@ pub struct DecorationWindowStateRequestInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -379,6 +397,7 @@ pub struct DecorationPointerMoveAsyncInvocation {
     pub actions: Vec<RuntimeWindowAction>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -408,6 +427,7 @@ pub struct LayerEffectEvaluationResult {
     pub effects: Vec<RuntimeLayerEffectAssignment>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -427,6 +447,7 @@ pub struct PopupEffectEvaluationResult {
     pub effects: Vec<RuntimePopupEffectAssignment>,
     pub next_poll_in_ms: Option<u64>,
     pub display_config: Option<RuntimeDisplayConfigUpdate>,
+    pub workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     pub key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     pub pointer_config: Option<RuntimePointerConfigUpdate>,
     pub input_config: Option<RuntimeInputConfigUpdate>,
@@ -600,6 +621,7 @@ impl DecorationEvaluator for StaticDecorationEvaluator {
             next_poll_in_ms: None,
             actions: Vec::new(),
             display_config: None,
+            workspace_config: None,
             key_binding_config: None,
             pointer_config: None,
             input_config: None,
@@ -766,6 +788,21 @@ enum RuntimeRequest<'a> {
         request_id: u64,
         #[serde(rename = "bindingId")]
         binding_id: &'a str,
+        #[serde(rename = "nowMs")]
+        now_ms: u64,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
+    WorkspaceActivate {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        #[serde(rename = "workspaceId")]
+        workspace_id: &'a str,
+        #[serde(rename = "groupId")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group_id: Option<&'a str>,
         #[serde(rename = "nowMs")]
         now_ms: u64,
         #[serde(rename = "displayState")]
@@ -983,6 +1020,8 @@ struct RuntimeEvaluateResponse {
     actions: Option<Vec<RuntimeWindowAction>>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1027,6 +1066,8 @@ struct RuntimeSchedulerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1052,6 +1093,8 @@ struct RuntimeClosedResponse {
     ok: bool,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    _workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     _key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1091,6 +1134,8 @@ struct RuntimeInvokeHandlerResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1130,6 +1175,8 @@ struct RuntimeStartCloseResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1155,6 +1202,8 @@ struct RuntimeEffectConfigResponse {
     background_effect: Option<WireCompiledEffect>,
     #[serde(rename = "displayConfig")]
     _display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    _workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     _key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1193,6 +1242,8 @@ struct RuntimePopupEffectsResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1219,6 +1270,8 @@ struct RuntimeLayerEffectsResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1242,6 +1295,8 @@ struct RuntimeLifecycleEnableResponse {
     ok: bool,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1289,6 +1344,8 @@ struct RuntimeInvokeKeyBindingResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1327,6 +1384,8 @@ struct RuntimeWindowResizeResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1363,6 +1422,8 @@ struct RuntimeWindowMoveResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1401,6 +1462,8 @@ struct RuntimePointerMoveAsyncResponse {
     next_poll_in_ms: Option<u64>,
     #[serde(rename = "displayConfig")]
     display_config: Option<RuntimeDisplayConfigUpdate>,
+    #[serde(rename = "workspaceConfig")]
+    workspace_config: Option<RuntimeWorkspaceConfigUpdate>,
     #[serde(rename = "keyBindingConfig")]
     key_binding_config: Option<RuntimeKeyBindingConfigUpdate>,
     #[serde(rename = "pointerConfig")]
@@ -1694,6 +1757,7 @@ impl NodeDecorationEvaluator {
         Ok(DecorationHandlerInvocation {
             invoked: true,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -2162,6 +2226,7 @@ impl NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -2253,6 +2318,7 @@ impl NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -2768,6 +2834,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             next_poll_in_ms: response.next_poll_in_ms,
             actions: response.actions.unwrap_or_default(),
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -2898,6 +2965,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             next_poll_in_ms: response.next_poll_in_ms,
             actions: response.actions.unwrap_or_default(),
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3040,6 +3108,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             next_poll_in_ms: response.next_poll_in_ms,
             actions: response.actions.unwrap_or_default(),
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3143,6 +3212,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3330,6 +3400,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3426,6 +3497,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3433,6 +3505,118 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             process_config: response.process_config,
             process_actions: response.process_actions.unwrap_or_default(),
             debug_config: response.debug_config,
+        })
+    }
+
+    fn workspace_activate(
+        &self,
+        event: &RuntimeWorkspaceActivateRequestSnapshot,
+        now_ms: u64,
+    ) -> Result<DecorationHandlerInvocation, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+
+        let Some(_) = runtime_guard.as_ref() else {
+            return Ok(DecorationHandlerInvocation::default());
+        };
+
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+
+        let request = serde_json::to_string(&RuntimeRequest::WorkspaceActivate {
+            request_id,
+            workspace_id: &event.workspace_id,
+            group_id: event.group_id.as_deref(),
+            now_ms,
+            display_state: &display_state,
+            input_state: &input_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeInvokeHandlerResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response id: expected {request_id}, got {}",
+                response.request_id
+            )));
+        }
+        if response.kind != "invokeHandler" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response kind for workspaceActivate: {}",
+                response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+
+        let node = if let Some(serialized) = response.serialized {
+            let stdout = serde_json::to_string(&serialized)
+                .map_err(|err| DecorationEvaluationError::InvalidResponse(err.to_string()))?;
+            Some(decode_tree_json(stdout.trim()).map_err(DecorationEvaluationError::Bridge)?)
+        } else {
+            None
+        };
+
+        Ok(DecorationHandlerInvocation {
+            invoked: response.invoked.unwrap_or(false),
+            node,
+            transform: response.transform,
+            managed_window: response.managed_window,
+            window_effects: response
+                .window_effects
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(DecorationEvaluationError::Bridge)?,
+            dirty_window_ids: response.dirty_window_ids.unwrap_or_default(),
+            dirty_managed_window_ids: response.dirty_managed_window_ids.unwrap_or_default(),
+            dirty_window_node_ids: response.dirty_window_node_ids.unwrap_or_default(),
+            actions: response.actions.unwrap_or_default(),
+            next_poll_in_ms: response.next_poll_in_ms,
+            display_config: response.display_config,
+            workspace_config: response.workspace_config,
+            key_binding_config: response.key_binding_config,
+            pointer_config: response.pointer_config,
+            input_config: response.input_config,
+            event_config: response.event_config,
+            process_config: response.process_config,
+            process_actions: response.process_actions.unwrap_or_default(),
         })
     }
 
@@ -3525,6 +3709,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3622,6 +3807,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3717,6 +3903,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3812,6 +3999,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -3907,6 +4095,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -4002,6 +4191,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -4119,6 +4309,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
             actions: response.actions.unwrap_or_default(),
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -4222,6 +4413,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
@@ -4325,6 +4517,7 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
                 .map_err(DecorationEvaluationError::Bridge)?,
             next_poll_in_ms: response.next_poll_in_ms,
             display_config: response.display_config,
+            workspace_config: response.workspace_config,
             key_binding_config: response.key_binding_config,
             pointer_config: response.pointer_config,
             input_config: response.input_config,
