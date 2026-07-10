@@ -5,6 +5,20 @@ import {
     type WindowStateKey,
 } from "shoji_wm";
 import type { ManagedWindowRect } from "shoji_wm/types";
+import {
+    CLOSE_ANIMATION_CHANNEL,
+    MINIMIZE_ANIMATION_CHANNEL,
+    OPEN_ANIMATION_CHANNEL,
+    OPEN_CLOSE_ANIMATION_DURATION,
+    WINDOW_CLOSE_EASING,
+    WINDOW_MINIMIZE_OPACITY_EASING,
+    WINDOW_MINIMIZE_RECT_EASING,
+    WINDOW_OPEN_EASING,
+    WINDOW_UNMINIMIZE_OPACITY_EASING,
+    WINDOW_UNMINIMIZE_RECT_EASING,
+} from "./constants";
+
+// --- Rect Animation Types & State ---
 
 export interface RectAnimationOptions {
     suppressSSDRebuild?: boolean;
@@ -17,6 +31,8 @@ interface RectAnimationTarget {
 
 const activeRectAnimationTargetByWindow = new WeakMap<WaylandWindow, Map<symbol, RectAnimationTarget>>();
 let rectAnimationToken = 0;
+
+// --- Rect Animation Helpers ---
 
 function rectAnimationChannel(windowRectState: WindowStateKey<ManagedWindowRect>): string {
     return `rect:${windowRectState.description ?? "anon"}`;
@@ -70,6 +86,8 @@ function clearActiveRectTarget(
     }
 }
 
+// --- Core Rect Animation API ---
+
 export function playRectAnimation(
     window: WaylandWindow,
     windowRectState: WindowStateKey<ManagedWindowRect>,
@@ -118,4 +136,77 @@ export function stopRectAnimation(
 ): void {
     setActiveRectTarget(window, windowRectState, undefined);
     window.cancelAnimation(rectAnimationChannel(windowRectState));
+}
+
+// --- State Transition Animations ---
+
+export function scheduleOpenAnimation(window: WaylandWindow): void {
+    window.scheduleAnimation({
+        channel: OPEN_ANIMATION_CHANNEL,
+        rect: {
+            from: { x: 0, y: 200, width: 0, height: 0 },
+            to: { x: 0, y: 0, width: 0, height: 0 },
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: WINDOW_OPEN_EASING,
+            mode: "add",
+        },
+        opacity: {
+            from: 0,
+            to: 1,
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: WINDOW_OPEN_EASING,
+            mode: "multiply",
+        },
+    });
+}
+
+export function scheduleCloseAnimation(window: WaylandWindow): void {
+    window.scheduleAnimation({
+        channel: CLOSE_ANIMATION_CHANNEL,
+        rect: {
+            from: { x: 0, y: 0, width: 0, height: 0 },
+            to: { x: 0, y: 120, width: 0, height: 0 },
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: WINDOW_CLOSE_EASING,
+            mode: "add",
+        },
+        opacity: {
+            from: 1,
+            to: 0,
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: WINDOW_CLOSE_EASING,
+            mode: "multiply",
+        },
+    });
+}
+
+export function scheduleMinimizeAnimation(
+    window: WaylandWindow,
+    minimized: boolean,
+): void {
+    window.scheduleAnimation({
+        channel: MINIMIZE_ANIMATION_CHANNEL,
+        rect: {
+            from: minimized
+                ? { x: 0, y: 0, width: 0, height: 0 }
+                : { x: 0, y: 200, width: 0, height: 0 },
+            to: minimized
+                ? { x: 0, y: 120, width: 0, height: 0 }
+                : { x: 0, y: 0, width: 0, height: 0 },
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: minimized
+                ? WINDOW_MINIMIZE_RECT_EASING
+                : WINDOW_UNMINIMIZE_RECT_EASING,
+            mode: "add",
+        },
+        opacity: {
+            from: minimized ? 1 : 0,
+            to: minimized ? 0 : 1,
+            duration: OPEN_CLOSE_ANIMATION_DURATION,
+            easing: minimized
+                ? WINDOW_MINIMIZE_OPACITY_EASING
+                : WINDOW_UNMINIMIZE_OPACITY_EASING,
+            mode: "override",
+        },
+    });
 }
