@@ -215,6 +215,36 @@ pub fn layer_surfaces_for_output(
     (upper, lower)
 }
 
+/// Layer surfaces ordered for the dedicated popup pass.
+///
+/// Render-element vectors are front-to-back in ShojiWM, so an overlay popup
+/// precedes top, bottom, and background layer popups. Keeping this separate
+/// from the parent-layer passes is important for `zwlr_layer_surface_v1.get_popup`:
+/// a tooltip belonging to a Bottom-layer bar must still appear above regular
+/// toplevel windows.
+pub fn layer_surfaces_for_popup_pass(
+    output: &smithay::output::Output,
+    overlay_only: bool,
+) -> Vec<LayerSurface> {
+    let map = layer_map_for_output(output);
+    let layer_kinds: &[WlrLayer] = if overlay_only {
+        &[WlrLayer::Overlay]
+    } else {
+        &[
+            WlrLayer::Overlay,
+            WlrLayer::Top,
+            WlrLayer::Bottom,
+            WlrLayer::Background,
+        ]
+    };
+
+    layer_kinds
+        .iter()
+        .flat_map(|layer| map.layers_on(*layer).rev().cloned())
+        .filter(layer_surface_is_mapped)
+        .collect()
+}
+
 pub fn layer_surface_is_mapped(layer_surface: &LayerSurface) -> bool {
     with_renderer_surface_state(layer_surface.wl_surface(), |state| state.buffer().is_some())
         .unwrap_or(false)

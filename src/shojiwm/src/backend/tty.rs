@@ -2146,7 +2146,6 @@ fn render_surface(
                 &state.upper_layer_source_damage,
                 state.lower_layer_scene_generation,
                 &state.configured_layer_effects,
-                &state.configured_popup_effects,
                 state.configured_background_effect.as_ref(),
                 &output,
                 output_geo,
@@ -2156,11 +2155,9 @@ fn render_surface(
                 &mut state.layer_backdrop_cache,
                 &mut state.layer_framebuffer_effect_states,
                 &mut state.layer_effect_cache,
-                &mut state.popup_effect_cache,
-                &mut state.popup_framebuffer_effect_states,
             )?
         };
-        let fullscreen_overlay_visible =
+        let mut fullscreen_overlay_visible =
             fullscreen_window.is_some() && !upper_layer_elements.is_empty();
         scene_elements.extend(upper_layer_elements);
         let upper_layers_elapsed_ms = upper_layers_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -4820,13 +4817,33 @@ fn render_surface(
                 &mut state.layer_backdrop_cache,
                 &state.configured_layer_effects,
                 &mut state.layer_effect_cache,
-                &state.configured_popup_effects,
-                &mut state.popup_effect_cache,
-                &mut state.popup_framebuffer_effect_states,
             )?);
         }
         let lower_layers_elapsed_ms = lower_layers_started_at.elapsed().as_secs_f64() * 1000.0;
         timing.lower_layers_elapsed_ms = lower_layers_elapsed_ms;
+
+        // Keep layer roots in their requested layer, but draw popups in a
+        // final front-most pass. GTK uses zwlr_layer_surface_v1.get_popup for
+        // Waybar tooltips, which must remain visible above normal windows even
+        // when the parent bar lives on Bottom.
+        let layer_popup_elements = {
+            timescope::scope!("tty layer popup scene");
+            layer_popup_scene_elements(
+                &mut backend.renderer,
+                &output,
+                output_geo,
+                scale,
+                fullscreen_window.is_some(),
+                &state.configured_popup_effects,
+                &mut state.popup_effect_cache,
+                &mut state.popup_framebuffer_effect_states,
+            )
+        };
+        fullscreen_overlay_visible |=
+            fullscreen_window.is_some() && !layer_popup_elements.is_empty();
+        let mut front_to_back_scene = layer_popup_elements;
+        front_to_back_scene.append(&mut scene_elements);
+        scene_elements = front_to_back_scene;
 
         let should_profile_damage = should_capture_blink;
         let damage_profile_started_at = Instant::now();
@@ -7407,6 +7424,45 @@ fn composed_popup_scene_elements(
     elements
 }
 
+/// Render all layer-shell popups in one front-most pass.
+///
+/// `zwlr_layer_surface_v1.get_popup` makes the popup a child of its layer
+/// surface, but placing it directly next to a Bottom-layer parent would leave
+/// it behind ordinary toplevels. This mirrors Hyprland's separate layer-popup
+/// pass while preserving the normal layer ordering for the parent roots.
+fn layer_popup_scene_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    output_geo: smithay::utils::Rectangle<i32, Logical>,
+    scale: smithay::utils::Scale<f64>,
+    overlay_only: bool,
+    configured_popup_effects: &std::collections::HashMap<String, crate::ssd::WindowEffectConfig>,
+    popup_effect_cache: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::WindowEffectElementState,
+    >,
+    popup_framebuffer_effect_states: &mut std::collections::HashMap<
+        String,
+        crate::backend::shader_effect::ShaderEffectElementState,
+    >,
+) -> Vec<TtyRenderElements> {
+    crate::backend::window::layer_surfaces_for_popup_pass(output, overlay_only)
+        .into_iter()
+        .flat_map(|layer_surface| {
+            composed_popup_scene_elements(
+                renderer,
+                output,
+                output_geo,
+                scale,
+                &layer_surface,
+                configured_popup_effects,
+                popup_effect_cache,
+                popup_framebuffer_effect_states,
+            )
+        })
+        .collect()
+}
+
 /// Display elements for all popups of a toplevel window, each composed with
 /// its configured popup effects. `location` is the window's output-local
 /// physical render location (same as `popup_elements` receives). Used only
@@ -9252,31 +9308,11 @@ fn lower_layer_scene_elements(
         String,
         crate::backend::shader_effect::WindowEffectElementState,
     >,
-    configured_popup_effects: &std::collections::HashMap<String, crate::ssd::WindowEffectConfig>,
-    popup_effect_cache: &mut std::collections::HashMap<
-        String,
-        crate::backend::shader_effect::WindowEffectElementState,
-    >,
-    popup_framebuffer_effect_states: &mut std::collections::HashMap<
-        String,
-        crate::backend::shader_effect::ShaderEffectElementState,
-    >,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let (_, lower_layers) = window_render::layer_surfaces_for_output(output);
     let mut elements = Vec::new();
     for (index, layer_surface) in lower_layers.iter().enumerate() {
         let layer_id = crate::ssd::layer_runtime_id(layer_surface);
-        // Popups draw above their layer; compose their effects per popup.
-        elements.extend(composed_popup_scene_elements(
-            renderer,
-            output,
-            output_geo,
-            scale,
-            layer_surface,
-            configured_popup_effects,
-            popup_effect_cache,
-            popup_framebuffer_effect_states,
-        ));
         let root_elements =
             window_render::layer_surface_root_elements(renderer, output, layer_surface, scale, 1.0)
                 .into_iter()
@@ -9689,7 +9725,6 @@ fn upper_layer_scene_elements(
     upper_layer_source_damage: &[crate::state::OwnedDamageRect],
     lower_layer_scene_generation: u64,
     configured_layer_effects: &std::collections::HashMap<String, crate::ssd::WindowEffectConfig>,
-    configured_popup_effects: &std::collections::HashMap<String, crate::ssd::WindowEffectConfig>,
     configured_background_effect: Option<&crate::ssd::BackgroundEffectConfig>,
     output: &Output,
     output_geo: smithay::utils::Rectangle<i32, Logical>,
@@ -9709,14 +9744,6 @@ fn upper_layer_scene_elements(
     layer_effect_cache: &mut std::collections::HashMap<
         String,
         crate::backend::shader_effect::WindowEffectElementState,
-    >,
-    popup_effect_cache: &mut std::collections::HashMap<
-        String,
-        crate::backend::shader_effect::WindowEffectElementState,
-    >,
-    popup_framebuffer_effect_states: &mut std::collections::HashMap<
-        String,
-        crate::backend::shader_effect::ShaderEffectElementState,
     >,
 ) -> Result<Vec<TtyRenderElements>, Box<dyn std::error::Error>> {
     let map = layer_map_for_output(output);
@@ -9741,17 +9768,6 @@ fn upper_layer_scene_elements(
         // Upper layers stacked below this one (the list is front-to-back);
         // backdrop captures must see them since they draw above all windows.
         let upper_layers_below = &upper_layers[layer_index + 1..];
-        // Popups draw above their layer; compose their effects per popup.
-        elements.extend(composed_popup_scene_elements(
-            renderer,
-            output,
-            output_geo,
-            scale,
-            &layer_surface,
-            configured_popup_effects,
-            popup_effect_cache,
-            popup_framebuffer_effect_states,
-        ));
         let root_elements = window_render::layer_surface_root_elements(
             renderer,
             output,
