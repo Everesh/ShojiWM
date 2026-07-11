@@ -261,6 +261,7 @@ COMPOSITOR.key.bind("terminal", "Super+T", () => {
   COMPOSITOR.process.spawn({ command: ["kitty"] });
 });
 
+// if kwallet6 is used as the password store, be sure to add the --password-store=kwallet6 flag
 COMPOSITOR.key.bind("chrome", "Super+B", () => {
   COMPOSITOR.process.spawn({
     command: "google-chrome-stable --enable-features=OzonePlatform --ozone-platform=wayland"
