@@ -205,7 +205,10 @@ struct AppState {
     // Diagnostics
     frames_completed: u64,
     last_log_at: std::time::Instant,
-    capture_kicked: bool,
+    /// Whether the PW stream is currently in Streaming state. Gates capture
+    /// kicks from `on_add_buffer` so we don't capture into a paused stream.
+    is_streaming
+    : bool,
 
     // Same dying / stop_flag pattern as toplevel_stream.rs — once the
     // consumer disconnects we short-circuit every callback so we don't
@@ -300,7 +303,7 @@ fn run(
         node_id_tx: Some(node_id_tx),
         frames_completed: 0,
         last_log_at: std::time::Instant::now(),
-        capture_kicked: false,
+        is_streaming: false,
         dying: false,
         stop_flag: Some(stop.clone()),
     };
@@ -815,8 +818,20 @@ impl AppState {
         {
             let _ = tx.send(Ok(stream.node_id()));
         }
-        if matches!(new, pw::stream::StreamState::Streaming) && !self.capture_kicked {
-            self.capture_kicked = true;
+        self.is_streaming = matches!(
+            new,
+            pw::stream::StreamState::Streaming,
+        );
+        // Kick a capture whenever we (re-)enter Streaming with no frame in
+        // flight. A one-shot latch is not enough here: when the consumer
+        // renegotiates buffers (Chromium switches its preview consumer for the
+        // WebRTC capturer, flipping DMA-BUF → SHM), the stream bounces through
+        // Paused, the buffer teardown abandons `pending_frame`, and the cycle
+        // has no other way to restart — the session then sits in Streaming
+        // delivering nothing, forever. `pending_frame.is_some()` covers the
+        // benign Paused→Streaming blips where a capture is still in flight.
+        if self.is_streaming && self.pending_frame
+            .is_none() {
             self.kick_capture();
         }
         if matches!(
@@ -899,6 +914,15 @@ impl AppState {
                 _storage: storage,
             },
         );
+
+        // A renegotiation can replace the whole buffer pool without the stream
+        // ever leaving Streaming; the teardown abandons any in-flight frame, so
+        // restart the capture cycle as soon as a fresh buffer exists.
+        if self.is_streaming && self.pending_frame
+            .is_none() {
+            self
+                .kick_capture();
+        }
     }
 
     fn create_slot_for_pw_data_types(
