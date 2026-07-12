@@ -22,7 +22,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{
+    AsFd,
+    AsRawFd,
+    BorrowedFd,
+    OwnedFd,
+    RawFd
+};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -180,6 +186,11 @@ struct BufferSlot {
     wl_buffer: wl_buffer::WlBuffer,
     _shm_pool: wl_shm_pool::WlShmPool,
     _fd: OwnedFd,
+    /// The fd handed to PipeWire in `spa_data.fd`. libpipewire does not take
+    /// ownership of fds the client fills in under ALLOC_BUFFERS, so it must
+    /// stay owned here and drop with the slot — otherwise every buffer-pool
+    /// rebuild leaks one fd per buffer.
+    _pw_fd: OwnedFd,
 }
 
 unsafe impl Send for AppState {}
@@ -722,7 +733,7 @@ impl AppState {
         );
 
         let fd_for_pw = match memfd.try_clone() {
-            Ok(c) => c.into_raw_fd(),
+            Ok(c) => c,
             Err(e) => {
                 tracing::error!("dup memfd for pw: {e}");
                 return;
@@ -742,7 +753,8 @@ impl AppState {
             let data = &mut datas[0];
             data.type_ = spa_sys::SPA_DATA_MemFd;
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
-            data.fd = fd_for_pw as i64;
+            data.fd = fd_for_pw
+                .as_raw_fd() as i64;
             data.data = std::ptr::null_mut();
             data.maxsize = size as u32;
             data.mapoffset = 0;
@@ -761,6 +773,7 @@ impl AppState {
                 wl_buffer: wl_buf,
                 _shm_pool: pool,
                 _fd: memfd,
+                _pw_fd: fd_for_pw,
             },
         );
     }
@@ -787,6 +800,14 @@ impl AppState {
     /// renders straight into the PW-owned memory and answers with Ready.
     fn kick_capture(&mut self) {
         if self.dying {
+            return;
+        }
+        // Only capture while the stream is actually Streaming — same gate as
+        // the output path: capturing/queueing into a paused driver stream
+        // wakes the node right back up and forces a buffer-pool rebuild every
+        // cycle, which starves consumers stuck in buffer allocation. The
+        // Streaming transition in `on_state_changed` restarts the cycle.
+        if !self.is_streaming {
             return;
         }
         let Some(session) = self.session.clone() else {
@@ -832,9 +853,14 @@ impl AppState {
         };
         pending.frame.destroy();
 
+        // Drop the frame without queueing if the stream left Streaming while
+        // it was in flight — queueing into a paused driver stream is exactly
+        // the wake-up that restarts the pause/rebuild churn. The buffer stays
+        // dequeued until the next pool rebuild, which is fine.
         if let Some(stream) = self.stream.clone()
             && pending.pw_buffer != 0
             && !self.dying
+            && self.is_streaming
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
             let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;

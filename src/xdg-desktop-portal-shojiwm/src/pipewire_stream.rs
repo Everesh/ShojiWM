@@ -86,7 +86,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{
+    AsFd,
+    AsRawFd,
+    BorrowedFd, 
+    OwnedFd, 
+    RawFd,
+};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -223,6 +229,11 @@ struct PendingFrame {
 struct BufferSlot {
     wl_buffer: wl_buffer::WlBuffer,
     _storage: BufferSlotStorage,
+    /// The fd handed to PipeWire in `spa_data.fd`. libpipewire does not take
+    /// ownership of fds the client fills in under ALLOC_BUFFERS, so it must
+    /// stay owned here and drop with the slot — otherwise every buffer-pool
+    /// rebuild leaks one fd per buffer.
+    _pw_fd: OwnedFd,
 }
 
 enum BufferSlotStorage {
@@ -861,7 +872,7 @@ impl AppState {
         let stride = slot.stride;
         let size = slot.size;
         let data_type = slot.data_type;
-        let fd_for_pw = slot.fd_for_pw.into_raw_fd();
+        let fd_for_pw = slot.fd_for_pw;
         let wl_buf = slot.wl_buffer;
         let storage = slot.storage;
 
@@ -879,7 +890,8 @@ impl AppState {
             let data = &mut datas[0];
             data.type_ = data_type;
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
-            data.fd = fd_for_pw as i64;
+            data.fd = fd_for_pw
+                .as_raw_fd() as i64;
             data.data = std::ptr::null_mut();
             data.maxsize = size as u32;
             data.mapoffset = 0;
@@ -897,6 +909,7 @@ impl AppState {
             BufferSlot {
                 wl_buffer: wl_buf,
                 _storage: storage,
+                _pw_fd: fd_for_pw,
             },
         );
     }
@@ -1058,6 +1071,17 @@ impl AppState {
         if self.dying {
             return;
         }
+        // Only capture while the stream is actually Streaming. With no active
+        // consumer the graph pauses our driver node after every cycle; if we
+        // keep capturing and queueing anyway, each queue wakes the node back
+        // up and forces a full buffer-pool rebuild (~each frame). That churn
+        // starves consumers stuck in buffer allocation (OBS never got a first
+        // frame) and, before the fd-ownership fix, leaked one fd per buffer
+        // per rebuild. The Streaming transition in `on_state_changed` restarts
+        // the cycle when a consumer shows up.
+        if !self.is_streaming {
+            return;
+        }
         let (Some(manager), Some(output)) = (self.manager.as_ref(), self.target_output.as_ref())
         else {
             tracing::warn!("kick_capture: missing manager or output");
@@ -1131,9 +1155,14 @@ impl AppState {
         // the right amount, then queue it. Re-check that the buffer still
         // exists in our slot map — PW may have freed it between dequeue and
         // ready (consumer disconnect path).
+        // If the stream left Streaming while this frame was in flight, drop it
+        // without queueing: queueing into a paused driver stream is exactly the
+        // wake-up that restarts the pause/rebuild churn. The buffer stays dequeued
+        // until the next pool rebuild, which is fine.
         if let Some(stream) = self.stream.clone()
             && pending.pw_buffer != 0
             && !self.dying
+            && self.is_streaming
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
             let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
