@@ -438,6 +438,15 @@ impl ScreenCast {
             .get(&session_key)
             .copied()
             .unwrap_or(true);
+        let persist_mode = self
+            .persist_modes
+            .lock()
+            .unwrap()
+            .get(
+                &session_key
+            )
+            .copied()
+            .unwrap_or(0);
         match selection {
             Some(Selection::Output(out)) => {
                 let framerate = {
@@ -483,6 +492,11 @@ impl ScreenCast {
                     "streams".to_string(),
                     OwnedValue::try_from(Value::from(streams)).unwrap(),
                 );
+                append_restore_results(
+                    &mut results,
+                    persist_mode, 
+                    &Selection::Output(out),
+                );
                 Ok((0, results))
             }
             Some(Selection::Toplevel(top)) => {
@@ -521,6 +535,13 @@ impl ScreenCast {
                 results.insert(
                     "streams".to_string(),
                     OwnedValue::try_from(Value::from(streams)).unwrap(),
+                );
+                append_restore_results(
+                    &mut results, 
+                    persist_mode,
+                    &Selection::Toplevel(
+                        top,
+                    ),
                 );
                 Ok((0, results))
             }
