@@ -11872,6 +11872,47 @@ fn schedule_commit_timing_timer(
     }
 }
 
+/// Re-arm the commit-timing timers on every tty output.
+///
+/// `schedule_commit_timing_timer` otherwise only runs from `frame_finish` when an
+/// output goes idle — but a commit-timing client (Mesa's Vulkan WSI paces every
+/// frame through wp_commit_timer timestamps) submits its next timestamped commit a
+/// few milliseconds *after* that check, once the presentation feedback sent by
+/// that same `frame_finish` reaches it. The commit then sits blocked on its
+/// timestamp barrier with no timer armed, and since the blocked commit holds the
+/// only pending damage, no render ever runs `pre_repaint` to signal it: the
+/// client wedges until an unrelated redraw (cursor motion, a shell clock tick)
+/// happens to repaint. Calling this whenever a timestamped commit arrives keeps
+/// the deadline covered; `schedule_commit_timing_timer` is a no-op for outputs
+/// that are rendering or already have a timer armed.
+pub fn arm_commit_timing_timers(
+    state: &mut ShojiWM,
+    loop_handle: &LoopHandle<'_, ShojiWM>,
+) {
+    let targets: Vec<(DrmNode, crtc::Handle)> = state
+        .tty_backends
+        .iter()
+        .flat_map(
+            |(node, backend)| backend.surfaces
+                .keys()
+                .map(
+                    move |crtc| (*node, *crtc)
+                )
+        )
+        .collect();
+    for (
+        node,
+        crtc,
+    ) in targets {
+        schedule_commit_timing_timer(
+            loop_handle, 
+            state, 
+            node, 
+            crtc,
+        );
+    }
+}
+
 fn blend_render_duration(previous: Duration, current: Duration) -> Duration {
     if previous.is_zero() {
         return current;

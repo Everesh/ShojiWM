@@ -12,6 +12,7 @@ use smithay::{
     },
     wayland::{
         buffer::BufferHandler,
+        commit_timing::CommitTimerStateUserData,
         compositor::{
             BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
             SurfaceAttributes, add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface,
@@ -452,6 +453,34 @@ impl CompositorHandler for ShojiWM {
                 if res.is_ok() {
                     add_blocker(surface, blocker);
                 }
+            }
+
+            // This commit carries a wp_commit_timer timestamp (smithay's commit-timing
+            // hook runs after this one and turns it into a barrier blocker). If the
+            // outputs are already idle, nothing else re-examines commit-timing deadlines
+            // until the next `frame_finish`, which never comes because the blocked commit
+            // holds the only pending damage — so queue a timer re-arm for after this
+            // dispatch, once the barrier is registered.
+            let has_commit_timer_timestamp = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CommitTimerStateUserData>()
+                    .is_some_and(
+                        |timer| timer
+                            .borrow()
+                            .timestamp
+                            .is_some()
+                    )
+            });
+            if has_commit_timer_timestamp {
+                state.loop_handle.insert_idle(|state| {
+                    let loop_handle = state.loop_handle
+                        .clone();
+                    crate::backend::tty::arm_commit_timing_timers(
+                        state, 
+                        &loop_handle,
+                    );
+                });
             }
         });
     }

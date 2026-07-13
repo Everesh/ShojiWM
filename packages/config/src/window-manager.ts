@@ -1451,6 +1451,15 @@ export class HybridWindowManager {
     return undefined;
   }
 
+  /** Every managed window across all workspaces (debug/IPC use). */
+  public listWindows(): WaylandWindow[] {
+    const windows: WaylandWindow[] = [];
+    for (const workspace of this.workspaces.values()) {
+      windows.push(...workspace.listWindows());
+    }
+    return windows;
+  }
+
   /**
    * Activate window by id (dock-style "go to this window"). Plays a unified
    * sequence: unminimize → switch workspace (if different) → pan within the

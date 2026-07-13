@@ -111,11 +111,9 @@ rustPlatform.buildRustPackage {
   cargoLock = {
     lockFile = ../Cargo.lock;
 
-    # The workspace currently depends on a Smithay git revision. Replace these
-    # fake hashes with the values printed by Nix during the first build.
     outputHashes = {
-      "smithay-0.7.0" = "sha256-g5dlLCXhqedqFBi8JcY3mCVkGafLst9pNpFp4mPgffo=";
-      "smithay-drm-extras-0.1.0" = "sha256-g5dlLCXhqedqFBi8JcY3mCVkGafLst9pNpFp4mPgffo=";
+      "smithay-0.7.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
+      "smithay-drm-extras-0.1.0" = "sha256-V8VWa7lj8w1CP3V7H1mITD/ChlkYGAg2EW+iE/SsUzE=";
     };
   };
 

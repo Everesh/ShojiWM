@@ -147,7 +147,9 @@ struct AppState {
     // Diagnostics.
     frames_completed: u64,
     last_log_at: std::time::Instant,
-    capture_kicked: bool,
+    /// Whether the PW stream is currently in Streaming state. Gates capture
+    /// kicks from `on_add_buffer` so we don't capture into a paused stream.
+    is_streaming: bool,
 
     // Set when the PW stream transitions to Error/Unconnected (consumer
     // disconnected, etc.). Every callback short-circuits afterwards so we
@@ -232,7 +234,7 @@ fn run(
         node_id_tx: Some(node_id_tx),
         frames_completed: 0,
         last_log_at: std::time::Instant::now(),
-        capture_kicked: false,
+        is_streaming: false,
         dying: false,
         stop_flag: Some(stop.clone()),
         needs_renegotiate: false,
@@ -425,9 +427,10 @@ fn run(
                             let mut params = [fpod, bpod];
                             if let Err(e) = stream.update_params(&mut params) {
                                 tracing::warn!("update_params failed: {e:?}");
-                            } else {
-                                state.capture_kicked = false;
                             }
+                            // No latch reset needed: the capture cycle restarts
+                            // from on_state_changed / on_add_buffer once the
+                            // reallocated buffers land (pending_frame is None).
                         }
                     }
                     (e1, e2) => {
@@ -670,9 +673,21 @@ impl AppState {
         {
             let _ = tx.send(Ok(stream.node_id()));
         }
-        if matches!(new, pw::stream::StreamState::Streaming) && !self.capture_kicked {
-            self.capture_kicked = true;
-            self.kick_capture();
+        self.is_streaming = matches!(
+            new,
+            pw::stream::StreamState::Streaming,
+        );
+        // Kick a capture whenever we (re-)enter Streaming with no frame in
+        // flight. The old one-shot `capture_kicked` latch only covered our own
+        // size renegotiations; a consumer-initiated renegotiation (Chromium
+        // swapping its preview consumer for the WebRTC capturer) also bounces
+        // the stream through Paused and abandons the in-flight frame, leaving
+        // no other restart path. `pending_frame.is_some()` covers the benign
+        // Paused→Streaming blips where a capture is still in flight.
+        if self.is_streaming && self.pending_frame
+            .is_none() {
+            self
+                .kick_capture();
         }
         if matches!(
             new,
@@ -763,6 +778,15 @@ impl AppState {
                 _fd: memfd,
             },
         );
+
+        // A renegotiation can replace the whole buffer pool without the stream
+        // ever leaving Streaming; the teardown abandons any in-flight frame, so
+        // restart the capture cycle as soon as a fresh buffer exists.
+        if self.is_streaming && self.pending_frame
+            .is_none() {
+            self
+                .kick_capture();
+        }
     }
 
     fn on_remove_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
