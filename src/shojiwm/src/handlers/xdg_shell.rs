@@ -20,8 +20,9 @@ use smithay::{
     wayland::{
         compositor::with_states,
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XDG_POPUP_ROLE, XdgShellHandler,
-            XdgShellState, XdgToplevelSurfaceData, decoration::XdgDecorationHandler,
+            Configure, PopupSurface, PositionerState, ToplevelSurface, XDG_POPUP_ROLE,
+            XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
+            decoration::XdgDecorationHandler,
         },
     },
 };
@@ -35,23 +36,6 @@ use tracing::{debug, info, warn};
 
 fn xdg_popup_debug_enabled() -> bool {
     std::env::var_os("SHOJI_XDG_POPUP_DEBUG").is_some_and(|value| value != "0" && !value.is_empty())
-}
-
-fn apply_decoration_mode(
-    state: &mut ShojiWM,
-    toplevel: &ToplevelSurface,
-    mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
-) {
-    toplevel.with_pending_state(|pending| {
-        pending.decoration_mode = Some(mode);
-    });
-
-    if toplevel.is_initial_configure_sent() {
-        toplevel.send_pending_configure();
-    } else {
-        toplevel.send_configure();
-    }
-    state.schedule_redraw();
 }
 
 fn mark_toplevel_metadata_dirty(
@@ -101,6 +85,7 @@ fn mark_toplevel_metadata_dirty(
     state.runtime_poll_dirty = true;
     state.request_tty_maintenance(reason);
     state.schedule_redraw();
+    state.mark_window_decoration_metadata_changed(surface.wl_surface());
 }
 
 impl XdgShellHandler for ShojiWM {
@@ -110,6 +95,7 @@ impl XdgShellHandler for ShojiWM {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let surface_id = surface.wl_surface().id();
+        let wl_surface = surface.wl_surface().clone();
         info!(
             surface = ?surface_id,
             "new xdg toplevel received"
@@ -157,6 +143,7 @@ impl XdgShellHandler for ShojiWM {
 
         self.space
             .map_element(window.clone(), initial_location, false);
+        self.ensure_wayland_window_decoration_policy(&wl_surface);
         let mapped_snapshot = self.snapshot_window(&window);
         let initial_managed_client_rect =
             match self.initial_managed_window_client_rect(&mapped_snapshot) {
@@ -247,6 +234,7 @@ impl XdgShellHandler for ShojiWM {
             })
             .cloned()
         else {
+            self.remove_window_decoration_negotiation(wl_surface);
             self.request_tty_maintenance("xdg-toplevel-destroyed");
             self.schedule_redraw();
             return;
@@ -283,6 +271,7 @@ impl XdgShellHandler for ShojiWM {
 
         self.remove_foreign_toplevel(&window);
         self.space.unmap_elem(&window);
+        self.remove_window_decoration_negotiation(wl_surface);
         self.request_tty_maintenance("xdg-toplevel-destroyed");
         self.schedule_redraw();
     }
@@ -549,6 +538,12 @@ impl XdgShellHandler for ShojiWM {
         mark_toplevel_metadata_dirty(self, &surface, "xdg-toplevel-title-changed");
     }
 
+    fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
+        if let Configure::Toplevel(configure) = configure {
+            self.acknowledge_xdg_decoration_mode(&surface, configure.state.decoration_mode);
+        }
+    }
+
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let seat = Seat::from_resource(&seat).unwrap();
         let popup = PopupKind::Xdg(surface);
@@ -601,19 +596,36 @@ impl XdgShellHandler for ShojiWM {
 
 impl XdgDecorationHandler for ShojiWM {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
+        self.note_xdg_decoration_created(toplevel.wl_surface());
     }
 
     fn request_mode(
         &mut self,
         toplevel: ToplevelSurface,
-        _mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        mode: xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     ) {
-        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
+        let preference = match mode {
+            xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide => {
+                crate::ssd::WindowDecorationModeSnapshot::Client
+            }
+            xdg_decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide => {
+                crate::ssd::WindowDecorationModeSnapshot::Server
+            }
+            _ => return,
+        };
+        self.note_xdg_decoration_request(
+            toplevel.wl_surface(),
+            Some(preference),
+            crate::ssd::WindowDecorationPolicyReasonSnapshot::ClientRequest,
+        );
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        apply_decoration_mode(self, &toplevel, self.default_decoration_mode);
+        self.note_xdg_decoration_request(
+            toplevel.wl_surface(),
+            None,
+            crate::ssd::WindowDecorationPolicyReasonSnapshot::ClientUnset,
+        );
     }
 }
 
@@ -644,6 +656,8 @@ fn check_grab(
 pub fn handle_commit(state: &mut ShojiWM, surface: &WlSurface) {
     let is_xdg_popup_surface =
         smithay::wayland::compositor::get_role(surface) == Some(XDG_POPUP_ROLE);
+
+    state.commit_xdg_decoration_mode(surface);
 
     // Handle toplevel commits.
     if let Some(window) = state

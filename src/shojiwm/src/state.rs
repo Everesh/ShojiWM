@@ -31,7 +31,6 @@ use smithay::{
             timer::{TimeoutAction, Timer},
         },
         rustix::net::sockopt::socket_peercred,
-        wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationMode,
         wayland_server::{
             Display, DisplayHandle, Resource,
@@ -292,6 +291,7 @@ pub struct ShojiWM {
     pub tty_backends: HashMap<DrmNode, BackendData>,
     pub tty_session: Option<LibSeatSession>,
     pub window_decorations: HashMap<Window, WindowDecorationState>,
+    pub window_decoration_negotiations: crate::window_decoration::WindowDecorationNegotiationMap,
     pub window_primary_output_names: HashMap<Window, String>,
     pub windows_ready_for_decoration: HashSet<String>,
     pub pending_xdg_state_configure_window_ids: HashSet<String>,
@@ -409,7 +409,6 @@ pub struct ShojiWM {
     pub pointer_element: PointerElement,
     pub text_rasterizer: TextRasterizer,
     pub icon_rasterizer: IconRasterizer,
-    pub default_decoration_mode: DecorationMode,
     pub display_config: DisplayConfig,
     pub clock: Clock<Monotonic>,
     pub fps_counter: crate::backend::fps_counter::FpsCounter,
@@ -947,7 +946,14 @@ impl ShojiWM {
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeDecorationMode::Server);
+        // The legacy KDE protocol announces this default when a client binds
+        // the manager, before any per-window metadata exists. Advertising
+        // Server here makes Firefox/Chromium construct an undecorated window
+        // up front, and some versions do not rebuild their full CSD after a
+        // later per-window Client response. Start from the Wayland-safe CSD
+        // baseline; COMPOSITOR.window.decoration.configure can still request
+        // SSD for each decoration object once the window is known.
+        let kde_decoration_state = KdeDecorationState::new::<Self>(&dh, KdeDecorationMode::Client);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
         let cursor_shape_manager_state = CursorShapeManagerState::new::<Self>(&dh);
@@ -1181,6 +1187,7 @@ impl ShojiWM {
             tty_backends: HashMap::new(),
             tty_session: None,
             window_decorations: HashMap::new(),
+            window_decoration_negotiations: HashMap::new(),
             window_primary_output_names: HashMap::new(),
             windows_ready_for_decoration: HashSet::new(),
             pending_xdg_state_configure_window_ids: HashSet::new(),
@@ -1293,7 +1300,6 @@ impl ShojiWM {
             text_rasterizer: TextRasterizer::new(Some(async_asset_job_sender.clone())),
             icon_rasterizer: IconRasterizer::new(Some(async_asset_job_sender)),
             // SSD rendering is available, so prefer compositor-side decorations by default.
-            default_decoration_mode: DecorationMode::ServerSide,
             display_config: DisplayConfig::from_env(),
             clock,
             fps_counter: crate::backend::fps_counter::FpsCounter::new(),
@@ -1867,6 +1873,7 @@ impl ShojiWM {
             is_maximized: false,
             is_fullscreen: false,
             is_xwayland: false,
+            decoration: Default::default(),
             size_constraints: Default::default(),
             is_resizable: true,
             is_transient: false,
@@ -1950,6 +1957,7 @@ impl ShojiWM {
         }
 
         self.decoration_evaluator = DecorationRuntimeEvaluator::Node(next);
+        self.mark_all_window_decoration_policies_reloaded();
         self.config_error_report = None;
         self.runtime_poll_dirty = true;
         let live_window_ids = self
@@ -2952,7 +2960,11 @@ impl ShojiWM {
                 decoration.layout.root.rect,
                 decoration.visual_transform,
             );
-            if !transformed_client.contains(logical_pos) {
+            if decoration
+                .content_clip
+                .is_some_and(|clip| clip.clips_surface)
+                && !transformed_client.contains(logical_pos)
+            {
                 return None;
             }
 
@@ -3026,9 +3038,26 @@ impl ShojiWM {
                 if let Some((surface, loc)) =
                     window.surface_under(window_local_pos, WindowSurfaceType::ALL)
                 {
-                    if Self::is_window_root_surface(window, &surface)
-                        || self.surface_has_popup_ancestor_for_hit_test(&surface)
-                    {
+                    let transformed_root = transformed_root_rect(
+                        decoration.layout.root.rect,
+                        decoration.visual_transform,
+                    );
+                    if Self::is_window_root_surface(window, &surface) {
+                        // Root-surface hits inside the SSD root are handled by the
+                        // decoration path below. A client-owned CSD resize/input region may
+                        // extend outside that root, though; keep that hit attached to the
+                        // frontmost window instead of letting a lower window claim it.
+                        if transformed_root.contains(LogicalPoint::new(
+                            pos.x.floor() as i32,
+                            pos.y.floor() as i32,
+                        )) {
+                            return None;
+                        }
+                        let desired_local = window_local_pos - loc.to_f64();
+                        let surface_origin = pos - desired_local;
+                        return Some((surface, surface_origin));
+                    }
+                    if self.surface_has_popup_ancestor_for_hit_test(&surface) {
                         return None;
                     }
                     let desired_local = window_local_pos - loc.to_f64();
@@ -3060,13 +3089,9 @@ impl ShojiWM {
                 return Some((surface, loc.to_f64() + location.to_f64()));
             }
 
-            let bbox = window.bbox();
-            let rect = LogicalRect::new(
-                location.x + bbox.loc.x,
-                location.y + bbox.loc.y,
-                bbox.size.w,
-                bbox.size.h,
-            );
+            let Some(rect) = self.window_bbox_rect(window) else {
+                continue;
+            };
             if rect.contains(LogicalPoint::new(
                 pos.x.floor() as i32,
                 pos.y.floor() as i32,
@@ -3124,13 +3149,9 @@ impl ShojiWM {
                 return Some((surface, loc.to_f64() + location.to_f64()));
             }
 
-            let bbox = window.bbox();
-            let rect = LogicalRect::new(
-                location.x + bbox.loc.x,
-                location.y + bbox.loc.y,
-                bbox.size.w,
-                bbox.size.h,
-            );
+            let Some(rect) = self.window_bbox_rect(window) else {
+                continue;
+            };
             if rect.contains(LogicalPoint::new(
                 pos.x.floor() as i32,
                 pos.y.floor() as i32,
@@ -3232,6 +3253,9 @@ impl ShojiWM {
             }
             if let Some(decoration) = self.window_decorations.get(window)
                 && decoration.managed_window.force_rect_size
+                && decoration
+                    .content_clip
+                    .is_some_and(|clip| clip.clips_surface)
             {
                 let transformed_root =
                     transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
@@ -3239,16 +3263,20 @@ impl ShojiWM {
                     return None;
                 }
             }
-            let location = self.space.element_location(window)?;
-            let bbox = window.bbox();
-            let rect = LogicalRect::new(
-                location.x + bbox.loc.x,
-                location.y + bbox.loc.y,
-                bbox.size.w,
-                bbox.size.h,
-            );
+            let rect = self.window_bbox_rect(window)?;
             rect.contains(logical_pos).then_some((window, rect))
         })
+    }
+
+    pub(crate) fn window_bbox_rect(&self, window: &Window) -> Option<LogicalRect> {
+        let location = self.space.element_location(window)?;
+        let bbox = window.bbox();
+        Some(LogicalRect::new(
+            location.x + bbox.loc.x,
+            location.y + bbox.loc.y,
+            bbox.size.w,
+            bbox.size.h,
+        ))
     }
 
     pub fn windows_top_to_bottom(&self) -> Vec<&Window> {
@@ -3292,18 +3320,16 @@ impl ShojiWM {
             if !decoration.managed_window_allows_render_on_output(output_name.as_str()) {
                 return false;
             }
-            let rect =
-                transformed_root_rect(decoration.layout.root.rect, decoration.visual_transform);
+            let rect = self.window_visual_bounds(window, decoration);
             return logical_rect_intersects_output(rect, output_geo);
         }
 
-        let Some(location) = self.space.element_location(window) else {
+        let Some(rect) = self.window_bbox_rect(window) else {
             return false;
         };
-        let bbox = window.bbox();
         let rect = Rectangle::<i32, Logical>::new(
-            Point::from((location.x + bbox.loc.x, location.y + bbox.loc.y)),
-            bbox.size,
+            Point::from((rect.x, rect.y)),
+            (rect.width, rect.height).into(),
         );
         rect.intersection(output_geo).is_some()
     }
@@ -3685,20 +3711,42 @@ impl ShojiWM {
         }
 
         if let Some(decoration) = self.window_decorations.get(window) {
-            return Some(transformed_root_rect(
-                decoration.layout.root.rect,
-                decoration.visual_transform,
-            ));
+            return Some(self.window_visual_bounds(window, decoration));
         }
 
-        let location = self.space.element_location(window)?;
-        let bbox = window.bbox();
-        Some(LogicalRect::new(
-            location.x + bbox.loc.x,
-            location.y + bbox.loc.y,
-            bbox.size.w,
-            bbox.size.h,
-        ))
+        self.window_bbox_rect(window)
+    }
+
+    fn window_visual_bounds(
+        &self,
+        window: &Window,
+        decoration: &WindowDecorationState,
+    ) -> LogicalRect {
+        let root = transformed_root_rect(
+            decoration.layout.root.rect,
+            decoration.visual_transform,
+        );
+        if decoration
+            .content_clip
+            .is_some_and(|clip| clip.clips_surface)
+        {
+            return root;
+        }
+
+        let Some(surface) = self.window_bbox_rect(window).map(|rect| {
+            transformed_rect(
+                rect,
+                decoration.layout.root.rect,
+                decoration.visual_transform,
+            )
+        }) else {
+            return root;
+        };
+        let left = root.x.min(surface.x);
+        let top = root.y.min(surface.y);
+        let right = (root.x + root.width).max(surface.x + surface.width);
+        let bottom = (root.y + root.height).max(surface.y + surface.height);
+        LogicalRect::new(left, top, right - left, bottom - top)
     }
 
     pub fn window_allows_render(&self, window: &Window) -> bool {

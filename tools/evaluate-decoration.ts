@@ -32,6 +32,12 @@ const DEFAULT_SNAPSHOT: WaylandWindowSnapshot = {
   isMaximized: false,
   isFullscreen: false,
   isXwayland: false,
+  decoration: {
+    protocol: "none",
+    clientPreference: null,
+    configuredMode: "server",
+    mode: "server",
+  },
   sizeConstraints: {},
   isResizable: true,
   isTransient: false,

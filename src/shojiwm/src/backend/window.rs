@@ -509,6 +509,58 @@ where
     }
 }
 
+pub fn non_root_surface_elements<R>(
+    window: &Window,
+    renderer: &mut R,
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+) -> Vec<WaylandSurfaceRenderElement<R>>
+where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
+    let root_id = match window.underlying_surface() {
+        WindowSurface::Wayland(surface) => Some(Id::from_wayland_resource(surface.wl_surface())),
+        WindowSurface::X11(_) => None,
+    };
+
+    surface_elements(window, renderer, location, scale, alpha)
+        .into_iter()
+        .filter(|element| root_id.as_ref().is_none_or(|root_id| element.id() != root_id))
+        .collect()
+}
+
+pub fn snapshot_bounds(
+    window: &Window,
+    location: Point<i32, Logical>,
+    root_rect: crate::ssd::LogicalRect,
+    content_clip: Option<ContentClip>,
+) -> crate::ssd::LogicalRect {
+    if content_clip.is_some_and(|clip| clip.clips_surface) {
+        return root_rect;
+    }
+
+    let bbox = window.bbox();
+    let surface = crate::ssd::LogicalRect::new(
+        location.x + bbox.loc.x,
+        location.y + bbox.loc.y,
+        bbox.size.w,
+        bbox.size.h,
+    );
+    let left = root_rect.x.min(surface.x);
+    let top = root_rect.y.min(surface.y);
+    let right = root_rect
+        .x
+        .saturating_add(root_rect.width)
+        .max(surface.x.saturating_add(surface.width));
+    let bottom = root_rect
+        .y
+        .saturating_add(root_rect.height)
+        .max(surface.y.saturating_add(surface.height));
+    crate::ssd::LogicalRect::new(left, top, right - left, bottom - top)
+}
+
 pub fn debug_surface_elements<R>(
     window: &Window,
     renderer: &mut R,
@@ -743,8 +795,13 @@ pub fn clipped_surface_elements(
     clip: Option<ContentClip>,
     _clip_all_surfaces: bool,
 ) -> Result<Vec<WindowClipElement>, smithay::backend::renderer::gles::GlesError> {
-    if std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {
-        return Ok(Vec::new());
+    // WindowSlot always describes placement, but only an explicit ancestor
+    // SSD clip is allowed to crop the client surface tree.
+    let clip = clip.filter(|clip| clip.clips_surface);
+
+    let elements = surface_elements(window, renderer, location, output_scale, alpha);
+    if clip.is_none() || std::env::var_os("SHOJI_GAP_BYPASS_CLIP").is_some() {
+        return Ok(elements.into_iter().map(WindowClipElement::Raw).collect());
     }
 
     let mut debug_app_id: Option<String> = None;
@@ -770,7 +827,6 @@ pub fn clipped_surface_elements(
         WindowSurface::X11(_) => None,
     };
 
-    let elements = surface_elements(window, renderer, location, output_scale, alpha);
     let element_geometries = elements
         .iter()
         .map(|element| Element::geometry(element, output_scale))

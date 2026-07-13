@@ -48,6 +48,9 @@ pub use window_model::{
     PointerMoveEventSnapshot, PointerMovePointSnapshot, PopupParentKindSnapshot, TransformOrigin,
     WaylandLayerSnapshot, WaylandOutputSnapshot, WaylandPopupSnapshot, WaylandWindowAction,
     WaylandWindowSnapshot, WindowActivateRequestEventSnapshot, WindowActivateRequestSourceSnapshot,
+    WindowDecorationDecisionSnapshot, WindowDecorationModeSnapshot,
+    WindowDecorationPolicyContextSnapshot, WindowDecorationPolicyReasonSnapshot,
+    WindowDecorationProtocolSnapshot, WindowDecorationStateSnapshot,
     WindowFullscreenRequestEventSnapshot, WindowIconSnapshot, WindowMaximizeRequestEventSnapshot,
     WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowMovePhaseSnapshot,
     WindowMoveSourceSnapshot, WindowPositionSnapshot, WindowResizeEdgesSnapshot,
@@ -3171,9 +3174,12 @@ fn effective_clip_for_node_resolved(
 }
 
 fn node_clips_children(node: &DecorationNode) -> bool {
+    // A container border defines the visible inner edge for its descendants.
+    // `overflow: visible` is the explicit escape hatch. WindowSlot is filtered
+    // separately when the client-surface clip is derived, because it is a leaf
+    // placement marker rather than an SSD container.
     node.style.clips_children()
-        || (matches!(node.kind, DecorationNodeKind::WindowBorder)
-            && node.style.border.is_some()
+        || (node.style.border.is_some()
             && !matches!(node.style.overflow, Some(Overflow::Visible)))
 }
 
@@ -3376,7 +3382,7 @@ mod tests {
     }
 
     #[test]
-    fn bordered_box_does_not_clip_children_without_overflow_hidden() {
+    fn bordered_box_clips_children_by_default() {
         let root = DecorationNode::new(DecorationNodeKind::Box(BoxNode {
             direction: LayoutDirection::Column,
         }))
@@ -3397,7 +3403,14 @@ mod tests {
             .layout(LogicalRect::new(0, 0, 100, 50))
             .expect("layout should succeed");
 
-        assert!(layout.root.children[0].resolved_effective_clip.is_none());
+        assert_eq!(
+            layout.root.children[0]
+                .resolved_effective_clip
+                .expect("border clip should propagate to children")
+                .radius
+                .round_to_i32(),
+            18
+        );
     }
 
     #[test]

@@ -59,6 +59,29 @@ COMPOSITOR.cursor.configure({
   size: 24,
 });
 
+COMPOSITOR.window.decoration.configure((window, context) => {
+  const appId = (window.appId() ?? "").toLowerCase();
+  const isFirefox =
+    appId === "firefox" ||
+    appId.endsWith(".firefox") ||
+    appId.includes("firefoxdeveloperedition");
+
+  // The KDE manager advertises CSD before per-window metadata is available.
+  // Keep that baseline while appId is unknown: sending an early SSD response
+  // makes some Firefox/Chromium versions permanently build reduced chrome.
+  if (appId.length === 0) {
+    return { mode: context.clientPreference ?? "client" };
+  }
+
+  // Firefox can repeatedly renegotiate when CSD is rejected. Keep CSD even
+  // when it relies on the manager default and sends no explicit preference.
+  if (isFirefox) {
+    return { mode: "client" };
+  }
+
+  return { mode: "server" };
+});
+
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 const HOT_RELOAD_WINDOW_MANAGER_STATE = "config.hybrid-window-manager";
 const FULLSCREEN_Z_INDEX = 2_000_000_000;
@@ -835,6 +858,23 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
         // refresh rate (i.e. games), so this is a no-op for ordinary fullscreen apps. Narrow it
         // per app if desired, e.g. `allowTearing={isGame(window.appId())}`.
         allowTearing={true}
+      >
+        <ClientWindow />
+      </ManagedWindow>
+    );
+  }
+
+  if (window.decoration().mode === "client") {
+    return (
+      <ManagedWindow
+        rect={managedRect}
+        zIndex={HYBRID_WINDOW_MANAGER.getWindowZIndex(window)}
+        visibleOutputs={window.state[WINDOW_STATE_VISIBLE_OUTPUTS]}
+        opacity={workspaceOpacity}
+        forceRectSize={forceRectSize}
+        tiled={tiled}
+        idle={inactive}
+        interactive={inactive((value) => !value)}
       >
         <ClientWindow />
       </ManagedWindow>

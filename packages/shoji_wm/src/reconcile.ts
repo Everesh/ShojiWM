@@ -42,6 +42,7 @@ export interface WindowSnapshotDiff {
   fullscreen: boolean;
   icon: boolean;
   interaction: boolean;
+  decoration: boolean;
   xwayland: boolean;
 }
 
@@ -83,6 +84,7 @@ export function diffWindowSnapshot(
   const fullscreen = previous.isFullscreen !== next.isFullscreen;
   const icon = !shallowEqual(previous.icon, next.icon);
   const interaction = !shallowEqual(previous.interaction, next.interaction);
+  const decoration = !shallowEqual(previous.decoration, next.decoration);
   const xwayland = previous.isXwayland !== next.isXwayland;
 
   return {
@@ -94,6 +96,7 @@ export function diffWindowSnapshot(
       maximized ||
       fullscreen ||
       icon ||
+      decoration ||
       xwayland,
     title,
     appId,
@@ -104,6 +107,7 @@ export function diffWindowSnapshot(
     fullscreen,
     icon,
     interaction,
+    decoration,
     xwayland,
   };
 }

@@ -32,6 +32,7 @@ pub mod runtime_process;
 pub mod runtime_workspace;
 pub mod ssd;
 pub mod state;
+pub mod window_decoration;
 pub mod wlr_foreign_toplevel;
 pub mod workspace_manager;
 pub mod xwayland_satellite;

@@ -3114,7 +3114,7 @@ fn render_surface(
                 let client_elements = if use_full_window_snapshot {
                     let full_snapshot_scene_started_at = Instant::now();
                     let mut snapshot_scene = Vec::new();
-                    if let Some(content_clip) = content_clip {
+                    if let Some(content_clip) = content_clip.filter(|clip| clip.clips_surface) {
                         let clipped = window_render::clipped_surface_elements(
                             window,
                             &mut backend.renderer,
@@ -3171,9 +3171,14 @@ fn render_surface(
                             .into_iter()
                             .map(|(_, element)| element),
                     );
-                    let full_rect = window_decorations
-                        .get(window)
-                        .map(|decoration| decoration.layout.root.rect);
+                    let full_rect = window_decorations.get(window).map(|decoration| {
+                        window_render::snapshot_bounds(
+                            window,
+                            window_location,
+                            decoration.layout.root.rect,
+                            decoration.content_clip,
+                        )
+                    });
                     let snapshot_scene_signature =
                         crate::backend::snapshot::render_element_scene_signature(
                             &snapshot_scene,
@@ -6015,7 +6020,7 @@ fn root_surface_source_elements_for_window(
     alpha: f32,
     content_clip: Option<crate::ssd::ContentClip>,
 ) -> Vec<TtyRenderElements> {
-    if let Some(content_clip) = content_clip {
+    if let Some(content_clip) = content_clip.filter(|clip| clip.clips_surface) {
         let clipped = window_render::clipped_surface_elements(
             window,
             renderer,
@@ -6084,7 +6089,7 @@ fn non_root_surface_elements_for_window(
     alpha: f32,
     content_clip: Option<crate::ssd::ContentClip>,
 ) -> Vec<TtyRenderElements> {
-    if let Some(content_clip) = content_clip {
+    if let Some(content_clip) = content_clip.filter(|clip| clip.clips_surface) {
         let clipped = window_render::clipped_surface_elements(
             window,
             renderer,
@@ -6124,13 +6129,14 @@ fn non_root_surface_elements_for_window(
         );
     }
 
-    let mut elements =
-        window_render::surface_elements(window, renderer, physical_location, output_scale, alpha);
-    if !elements.is_empty() {
-        elements.remove(0);
-    }
     transform_window_elements(
-        elements,
+        window_render::non_root_surface_elements(
+            window,
+            renderer,
+            physical_location,
+            output_scale,
+            alpha,
+        ),
         visual,
         TtyRenderElements::Window,
         TtyRenderElements::TransformedWindow,

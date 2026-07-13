@@ -16,9 +16,10 @@ use super::window_model::{
     GestureSwipeEventSnapshot, GestureSwipePhaseSnapshot, ManagedWindowAnimationSnapshot,
     ManagedWindowState, PointerMoveEventSnapshot, WaylandLayerSnapshot, WaylandOutputSnapshot,
     WaylandPopupSnapshot, WaylandWindowAction, WaylandWindowSnapshot,
-    WindowActivateRequestEventSnapshot, WindowFullscreenRequestEventSnapshot,
-    WindowMaximizeRequestEventSnapshot, WindowMinimizeRequestEventSnapshot,
-    WindowMoveEventSnapshot, WindowResizeEventSnapshot,
+    WindowActivateRequestEventSnapshot, WindowDecorationDecisionSnapshot,
+    WindowDecorationModeSnapshot, WindowDecorationPolicyContextSnapshot,
+    WindowFullscreenRequestEventSnapshot, WindowMaximizeRequestEventSnapshot,
+    WindowMinimizeRequestEventSnapshot, WindowMoveEventSnapshot, WindowResizeEventSnapshot,
 };
 use super::{
     BackgroundEffectConfig, DecorationBridgeError, DecorationLayoutError, DecorationNode,
@@ -60,6 +61,16 @@ pub trait DecorationEvaluator {
         now_ms: u64,
     ) -> Result<DecorationEvaluationResult, DecorationEvaluationError> {
         self.evaluate_window(window, now_ms)
+    }
+
+    fn window_decoration_policy(
+        &self,
+        _window: &WaylandWindowSnapshot,
+        _context: &WindowDecorationPolicyContextSnapshot,
+    ) -> Result<WindowDecorationDecisionSnapshot, DecorationEvaluationError> {
+        Ok(WindowDecorationDecisionSnapshot {
+            mode: WindowDecorationModeSnapshot::Server,
+        })
     }
 
     fn evaluate_cached_window(
@@ -753,6 +764,16 @@ enum RuntimeRequest<'a> {
         #[serde(rename = "inputState")]
         input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
     },
+    WindowDecorationPolicy {
+        #[serde(rename = "requestId")]
+        request_id: u64,
+        snapshot: &'a WaylandWindowSnapshot,
+        context: &'a WindowDecorationPolicyContextSnapshot,
+        #[serde(rename = "displayState")]
+        display_state: &'a std::collections::BTreeMap<String, WaylandOutputSnapshot>,
+        #[serde(rename = "inputState")]
+        input_state: &'a std::collections::BTreeMap<String, RuntimeInputDeviceSnapshot>,
+    },
     SchedulerTick {
         #[serde(rename = "requestId")]
         request_id: u64,
@@ -1038,6 +1059,16 @@ struct RuntimeEvaluateResponse {
     process_config: Option<RuntimeProcessConfigUpdate>,
     #[serde(rename = "processActions")]
     process_actions: Option<Vec<RuntimeProcessAction>>,
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RuntimeWindowDecorationPolicyResponse {
+    #[serde(rename = "requestId")]
+    request_id: u64,
+    kind: String,
+    ok: bool,
+    decision: Option<WindowDecorationDecisionSnapshot>,
     error: Option<String>,
 }
 
@@ -3022,6 +3053,74 @@ impl DecorationEvaluator for NodeDecorationEvaluator {
         })
     }
 
+    fn window_decoration_policy(
+        &self,
+        window: &WaylandWindowSnapshot,
+        context: &WindowDecorationPolicyContextSnapshot,
+    ) -> Result<WindowDecorationDecisionSnapshot, DecorationEvaluationError> {
+        let mut runtime_guard = self.runtime.lock().map_err(|_| {
+            DecorationEvaluationError::RuntimeProtocol("runtime mutex poisoned".into())
+        })?;
+        let runtime = self.ensure_runtime(&mut runtime_guard)?;
+        let request_id = runtime.next_request_id;
+        runtime.next_request_id += 1;
+        let display_state = self
+            .display_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let input_state = self
+            .input_state
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let request = serde_json::to_string(&RuntimeRequest::WindowDecorationPolicy {
+            request_id,
+            snapshot: window,
+            context,
+            display_state: &display_state,
+            input_state: &input_state,
+        })
+        .map_err(|err| DecorationEvaluationError::SnapshotSerialization(err.to_string()))?;
+        runtime.write_request(&request)?;
+
+        let response: RuntimeWindowDecorationPolicyResponse =
+            if let Some(response) = runtime.read_response()? {
+                response
+            } else {
+                let status = runtime
+                    .child
+                    .try_wait()?
+                    .and_then(|status| status.code())
+                    .unwrap_or(-1);
+                let stderr = runtime
+                    .stderr_log
+                    .lock()
+                    .map(|stderr| stderr.clone())
+                    .unwrap_or_default();
+                *runtime_guard = None;
+                return Err(DecorationEvaluationError::RuntimeFailed { status, stderr });
+            };
+        if response.request_id != request_id || response.kind != "windowDecorationPolicy" {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(format!(
+                "mismatched response for windowDecorationPolicy: id={}, kind={}",
+                response.request_id, response.kind
+            )));
+        }
+        if !response.ok {
+            *runtime_guard = None;
+            return Err(DecorationEvaluationError::RuntimeProtocol(
+                response
+                    .error
+                    .unwrap_or_else(|| "runtime returned failure".into()),
+            ));
+        }
+        response.decision.ok_or_else(|| {
+            DecorationEvaluationError::RuntimeProtocol("missing decoration decision".into())
+        })
+    }
+
     fn evaluate_cached_window(
         &self,
         window_id: &str,
@@ -4608,6 +4707,7 @@ mod tests {
             is_maximized: false,
             is_fullscreen: false,
             is_xwayland: false,
+            decoration: Default::default(),
             size_constraints: Default::default(),
             is_resizable: true,
             is_transient: false,
@@ -4638,6 +4738,35 @@ mod tests {
                 .expect("unfocused evaluation should succeed");
 
         assert_ne!(focused.root.style.border, unfocused.root.style.border);
+    }
+
+    #[test]
+    fn decoration_policy_request_uses_runtime_wire_names() {
+        let window = make_window(false);
+        let context = WindowDecorationPolicyContextSnapshot {
+            protocol: crate::ssd::WindowDecorationProtocolSnapshot::XdgDecorationV1,
+            client_preference: Some(WindowDecorationModeSnapshot::Client),
+            can_negotiate: true,
+            reason: crate::ssd::WindowDecorationPolicyReasonSnapshot::ClientRequest,
+        };
+        let display_state = std::collections::BTreeMap::new();
+        let input_state = std::collections::BTreeMap::new();
+        let request = RuntimeRequest::WindowDecorationPolicy {
+            request_id: 42,
+            snapshot: &window,
+            context: &context,
+            display_state: &display_state,
+            input_state: &input_state,
+        };
+
+        let value = serde_json::to_value(request).expect("request should serialize");
+        assert_eq!(value["kind"], "windowDecorationPolicy");
+        assert_eq!(value["requestId"], 42);
+        assert_eq!(value["snapshot"]["decoration"]["configuredMode"], "server");
+        assert_eq!(value["context"]["protocol"], "xdg-decoration-v1");
+        assert_eq!(value["context"]["clientPreference"], "client");
+        assert_eq!(value["context"]["canNegotiate"], true);
+        assert_eq!(value["context"]["reason"], "clientRequest");
     }
 
     #[test]

@@ -40,6 +40,10 @@ export const defaultWindowComposition = (window: WaylandWindow) => {
     background: titlebarBackground,
   };
 
+  if (window.decoration().mode === "client") {
+    return <ClientWindow />;
+  }
+
   return (
     <WindowBorder
       style={{

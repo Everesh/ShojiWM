@@ -1558,10 +1558,16 @@ pub fn init_winit(
                                 WinitRenderElements::TransformedWindow,
                             );
                             if use_full_window_snapshot {
-                                let full_rect = state
-                                    .window_decorations
-                                    .get(window)
-                                    .map(|decoration| decoration.layout.root.rect);
+                                let full_rect = state.window_decorations.get(window).map(
+                                    |decoration| {
+                                        window_render::snapshot_bounds(
+                                            window,
+                                            window_location,
+                                            decoration.layout.root.rect,
+                                            decoration.content_clip,
+                                        )
+                                    },
+                                );
                                 let mut snapshot_scene = Vec::new();
                                 snapshot_scene.extend(popup_elements.into_iter());
                                 snapshot_scene.extend(client_elements.into_iter());

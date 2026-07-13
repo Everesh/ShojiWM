@@ -709,25 +709,31 @@ impl KdeDecorationHandler for ShojiWM {
         &self.kde_decoration_state
     }
 
-    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
-        decoration.mode(KdeDecorationMode::Server);
+    fn new_decoration(&mut self, surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        self.note_kde_decoration_created(surface, decoration);
     }
 
     fn request_mode(
         &mut self,
-        _surface: &WlSurface,
+        surface: &WlSurface,
         decoration: &OrgKdeKwinServerDecoration,
         mode: smithay::reexports::wayland_server::WEnum<KdeDecorationMode>,
     ) {
-        // Honor the client's requested mode. Previously we unconditionally replied with
-        // `Server`, which caused Firefox's WaylandProxy to spam `request_mode(Client)` at
-        // ~60k/sec: Firefox asked for Client, we disagreed with Server, Firefox retried,
-        // and the ping-pong saturated the wl_display dispatch loop (visible in `perf` as
-        // `OrgKdeKwinServerDecoration::parse_request` dominating compositor CPU). This
-        // matches niri's handler, which simply echoes back what the client requested.
         if let Ok(mode) = mode.into_result() {
-            decoration.mode(mode);
+            self.note_kde_decoration_request(
+                surface,
+                decoration,
+                match mode {
+                    KdeDecorationMode::Client => crate::ssd::WindowDecorationModeSnapshot::Client,
+                    KdeDecorationMode::Server => crate::ssd::WindowDecorationModeSnapshot::Server,
+                    _ => return,
+                },
+            );
         }
+    }
+
+    fn release(&mut self, _decoration: &OrgKdeKwinServerDecoration, surface: &WlSurface) {
+        self.remove_window_decoration_negotiation(surface);
     }
 }
 

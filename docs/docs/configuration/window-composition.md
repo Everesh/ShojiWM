@@ -51,6 +51,7 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 | `isFloating` | `boolean` | Floating (non-tiled) |
 | `isMaximized` | `boolean` | Maximized |
 | `isFullscreen` | `boolean` | Fullscreen |
+| `decoration` | `WindowDecorationState` | Effective CSD/SSD negotiation state |
 | `isResizable` | `boolean` | Client allows interactive resize |
 | `isTransient` | `boolean` | A child (dialog) of another window |
 | `parentId` | `string \| undefined` | Parent window id, if transient |
@@ -60,6 +61,79 @@ or map it as `window.isFocused((f) => f ? 'a' : 'b')`.
 Non-reactive helpers: `id` (stable string), `position` / `rect` (current logical
 geometry), `state` (per-window store — see [State & Signals](./state-and-signals.md)),
 `transform` (GPU transform), `animation` (see [Animations](./animations.md)).
+
+### Client-side and server-side decorations
+
+Wayland applications can draw their own title bar and borders (client-side
+decoration, CSD), or ask the compositor to draw them (server-side decoration,
+SSD). Configure ShojiWM's policy once, then use the negotiated result in the
+composition:
+
+```tsx
+COMPOSITOR.window.decoration.configure((window, context) => {
+  const appId = (window.appId() ?? "").toLowerCase();
+
+  // Preserve the CSD baseline until metadata identifies the application.
+  if (appId.length === 0) {
+    return { mode: context.clientPreference ?? "client" };
+  }
+  if (appId.includes("firefox")) {
+    return { mode: "client" };
+  }
+  return { mode: "server" };
+});
+
+COMPOSITOR.window.composition = (window) => (
+  <ManagedWindow rect={window.position} zIndex={1}>
+    {window.decoration().mode === "client" ? (
+      <ClientWindow />
+    ) : (
+      <WindowBorder style={{ border: { px: 2, color: "#4f5666" } }}>
+        <Box direction="column">
+          {/* title bar */}
+          <ClientWindow />
+        </Box>
+      </WindowBorder>
+    )}
+  </ManagedWindow>
+);
+```
+
+The resolver runs synchronously when a decoration object is created, the
+client changes its preference, relevant metadata changes, or the TS config is
+reloaded. `context` contains:
+
+The legacy KDE decoration manager advertises CSD as its global default because
+that event is sent before per-window metadata exists. The app id may therefore
+still be empty during the first decoration request. Preserve the CSD baseline
+while it is empty, then apply the final per-app policy when metadata arrives,
+as in the example above. Sending an early SSD response can make clients such
+as Firefox or Chromium construct reduced window chrome that they do not fully
+rebuild after a later CSD response. The resolver must be side-effect free;
+window actions such as `focus()` are rejected in this context.
+
+| Property | Meaning |
+| --- | --- |
+| `protocol` | `xdg-decoration-v1`, `kde-server-decoration`, `xwayland`, or `none` |
+| `clientPreference` | The client's requested mode, or `null` if it did not choose one |
+| `canNegotiate` | Whether ShojiWM can send the decision through a decoration protocol |
+| `reason` | Why the policy is being evaluated |
+
+`window.decoration.configuredMode` is the last mode ShojiWM selected.
+`window.decoration.mode` is the effective mode acknowledged and committed by
+the client; use this value for rendering. The two can differ briefly during an
+XDG configure/ack/commit cycle.
+
+When `canNegotiate` is `false`, ShojiWM can still select which composition to
+draw, but cannot force the client to add or remove CSD. XWayland decoration is
+also observable as `protocol: 'xwayland'`, but is not negotiated through these
+Wayland protocols.
+
+For the legacy KDE protocol, ShojiWM suppresses repeated acknowledgements to
+prevent a client/compositor renegotiation loop. If eight identical requests
+arrive, it writes one warning to the compositor log for that loop; it does not
+spam one warning per request. XDG decoration requests always receive the
+configure response required by that protocol.
 
 ### Methods
 
@@ -104,10 +178,25 @@ driven by your window-manager logic.
 children. Alias: `<Window/>`.
 
 ```tsx
-<ClientWindow style={{borderRadius: 8}} />
+<ClientWindow />
 ```
 
-The optional `style` clips/styles the surface (typically just `borderRadius`).
+A bare client window preserves the complete client-owned surface tree, including
+CSD shadows and transparent resize margins outside `xdg_surface.window_geometry`.
+It is not clipped merely because it occupies the managed window slot.
+
+Clipping is owned by the surrounding SSD hierarchy. Wrap the client in a
+container with a `border` to clip descendants to that border's inner edge (and
+rounded shape), or use `overflow: "hidden"` for an explicit clip. Set
+`overflow: "visible"` on a bordered container to opt out.
+
+```tsx
+<WindowBorder
+  style={{border: {px: 2, color: borderColor}, borderRadius: 8}}
+>
+  <ClientWindow />
+</WindowBorder>
+```
 
 :::tip[Fullscreen fast path]
 For fullscreen windows, return **only** a bare `<ClientWindow/>` inside

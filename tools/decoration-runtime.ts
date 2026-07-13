@@ -41,6 +41,7 @@ import {
   type LayerEffectAssignment,
   type PopupEffectAssignment,
   createReactiveLayer,
+  createReactiveWindow,
   createWindowAnimationControllerWithStore,
   createCompositionEvaluationCache,
   type WindowCompositionContext,
@@ -105,6 +106,9 @@ import {
   type WaylandPopup,
   type WaylandWindowActions,
   type WaylandWindowSnapshot,
+  type WindowDecorationContext,
+  type WindowDecorationDecision,
+  resolveWindowDecorationDecision,
   type WindowEffectAssignment,
   type ManagedWindowAnimationEasing,
   type ManagedWindowPoint,
@@ -227,6 +231,15 @@ interface EvaluatePreviewRequest {
   kind: "evaluatePreview";
   snapshot: WaylandWindowSnapshot;
   nowMs: number;
+  displayState: Record<string, OutputStateSnapshot>;
+  inputState?: Record<string, InputDeviceInfo>;
+}
+
+interface WindowDecorationPolicyRequest {
+  requestId: number;
+  kind: "windowDecorationPolicy";
+  snapshot: WaylandWindowSnapshot;
+  context: WindowDecorationContext;
   displayState: Record<string, OutputStateSnapshot>;
   inputState?: Record<string, InputDeviceInfo>;
 }
@@ -426,6 +439,7 @@ type RuntimeRequest =
   | DrainPreloadRequest
   | EvaluateRequest
   | EvaluatePreviewRequest
+  | WindowDecorationPolicyRequest
   | SchedulerTickRequest
   | WindowClosedRequest
   | StartCloseRequest
@@ -481,6 +495,13 @@ interface DrainPreloadSuccess {
   requestId: number;
   ok: true;
   kind: "drainPreload";
+}
+
+interface WindowDecorationPolicySuccess {
+  requestId: number;
+  ok: true;
+  kind: "windowDecorationPolicy";
+  decision: WindowDecorationDecision;
 }
 
 interface SchedulerTickSuccess {
@@ -914,6 +935,13 @@ function applyRuntimeEnvironment(
 }
 
 const cacheByWindowId = new Map<string, RuntimeCacheEntry>();
+// Decoration negotiation can run before the first composition evaluation and
+// during hot reload. Keep it out of cacheByWindowId so it cannot consume the
+// onOpen/onFirstCommit lifecycle that restores workspace membership.
+const decorationPolicyWindowById = new Map<
+  string,
+  DecorationPolicyWindowEntry
+>();
 const openedWindowIds = new Set<string>();
 const initialConfiguredWindowIds = new Set<string>();
 const firstCommittedWindowIds = new Set<string>();
@@ -949,6 +977,11 @@ interface RuntimeCacheEntry {
   closeStarted: boolean;
   preconfigured: boolean;
   closePoll?: PollHandle;
+}
+
+interface DecorationPolicyWindowEntry {
+  snapshotRef: { current: WaylandWindowSnapshot };
+  handle: ReturnType<typeof createReactiveWindow>;
 }
 
 interface RuntimeLayerEntry {
@@ -1208,6 +1241,7 @@ async function main() {
             break;
           case "lifecycleEnable":
           case "lifecycleDisable":
+          case "windowDecorationPolicy":
           case "workspaceActivate":
             break;
         }
@@ -1408,6 +1442,19 @@ async function main() {
             eventConfig,
             processConfig,
             processActions,
+          });
+        } else if (request.kind === "windowDecorationPolicy") {
+          const decision = evaluateWindowDecorationPolicy(
+            composition,
+            events,
+            request.snapshot,
+            request.context,
+          );
+          await writeResponse(output, {
+            requestId: request.requestId,
+            ok: true,
+            kind: "windowDecorationPolicy",
+            decision,
           });
         } else {
           if (request.kind === "schedulerTick") {
@@ -2231,6 +2278,43 @@ function evaluatePreconfigure(
     managedWindow: entry.cache.lastManagedWindow,
     windowEffects: evaluateWindowEffects(effectConfig, snapshot.id, entry),
   };
+}
+
+function evaluateWindowDecorationPolicy(
+  _composition: WindowCompositionFunction,
+  _events: CompositorEventController,
+  snapshot: WaylandWindowSnapshot,
+  context: WindowDecorationContext,
+): WindowDecorationDecision {
+  let policyEntry = decorationPolicyWindowById.get(snapshot.id);
+  if (!policyEntry) {
+    const snapshotRef = { current: snapshot };
+    const unsupportedAction = () => {
+      throw new Error(
+        "window actions cannot be called from COMPOSITOR.window.decoration.configure",
+      );
+    };
+    const handle = createReactiveWindow(snapshot, {
+      close: unsupportedAction,
+      maximize: unsupportedAction,
+      unmaximize: unsupportedAction,
+      minimize: unsupportedAction,
+      fullscreen: unsupportedAction,
+      unfullscreen: unsupportedAction,
+      focus: unsupportedAction,
+      scheduleAnimation: unsupportedAction,
+      cancelAnimation: unsupportedAction,
+      setCloseAnimationDuration: unsupportedAction,
+      isXWayland: () => snapshotRef.current.isXwayland,
+    });
+    policyEntry = { snapshotRef, handle };
+    decorationPolicyWindowById.set(snapshot.id, policyEntry);
+  } else {
+    policyEntry.snapshotRef.current = snapshot;
+    policyEntry.handle.update(snapshot);
+  }
+
+  return resolveWindowDecorationDecision(policyEntry.handle.window, context);
 }
 
 function evaluateWindowEffects(
@@ -3191,6 +3275,7 @@ function closeWindow(
   events: CompositorEventController,
   windowId: string,
 ): void {
+  decorationPolicyWindowById.delete(windowId);
   const existing = cacheByWindowId.get(windowId);
   if (!existing) {
     return;
@@ -3501,6 +3586,7 @@ function writeResponse(
     | LifecycleEnableSuccess
     | LifecycleDisableSuccess
     | DrainPreloadSuccess
+    | WindowDecorationPolicySuccess
     | RuntimeFailure,
 ): Promise<void> {
   const envUpdates = drainPendingEnvUpdates();

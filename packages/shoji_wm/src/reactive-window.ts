@@ -1,5 +1,8 @@
 import { signal, type Signal } from "./signals";
-import { createWindowAnimationController, type WindowAnimationController } from "./animation";
+import {
+  createWindowAnimationController,
+  type WindowAnimationController,
+} from "./animation";
 import { shallowEqual } from "./reconcile";
 import { createWindowStateStore } from "./window-state";
 import type {
@@ -12,6 +15,7 @@ import type {
   WaylandWindowSnapshot,
   ManagedWindowState,
   WindowIcon,
+  WindowDecorationState,
   WindowPosition,
   WindowSizeConstraints,
 } from "./types";
@@ -35,6 +39,7 @@ interface MutableWindowSignals {
   parentId: Signal<string | undefined>;
   icon: Signal<WindowIcon | undefined>;
   interaction: Signal<WindowCompositionInteractionSnapshot>;
+  decoration: Signal<WindowDecorationState>;
   transformOriginX: Signal<number>;
   transformOriginY: Signal<number>;
   transformTranslateX: Signal<number>;
@@ -47,7 +52,9 @@ interface MutableWindowSignals {
 export function createReactiveWindow(
   snapshot: WaylandWindowSnapshot,
   actions: WaylandWindowActions,
-  animation: WindowAnimationController = createWindowAnimationController(snapshot.id),
+  animation: WindowAnimationController = createWindowAnimationController(
+    snapshot.id,
+  ),
 ): ReactiveWaylandWindowHandle {
   const signals: MutableWindowSignals = {
     id: signal(snapshot.id),
@@ -68,6 +75,7 @@ export function createReactiveWindow(
     parentId: signal(snapshot.parentId),
     icon: signal(snapshot.icon),
     interaction: signal(snapshot.interaction),
+    decoration: signal(snapshot.decoration),
     transformOriginX: signal(0.5),
     transformOriginY: signal(0.5),
     transformTranslateX: signal(0),
@@ -166,6 +174,7 @@ export function createReactiveWindow(
     parentId: signals.parentId,
     icon: signals.icon,
     interaction: signals.interaction,
+    decoration: signals.decoration,
     get transform() {
       return transform;
     },
@@ -215,7 +224,12 @@ export function createReactiveWindow(
       // evaluate→handle.update→notify→dirty cycle (~250ms scheduler-tick
       // cadence) once anything bootstraps it. Compare structurally before
       // writing so identity-but-not-equality "changes" are squashed.
-      if (!shallowEqual(signals.sizeConstraints.peek(), nextSnapshot.sizeConstraints)) {
+      if (
+        !shallowEqual(
+          signals.sizeConstraints.peek(),
+          nextSnapshot.sizeConstraints,
+        )
+      ) {
         signals.sizeConstraints.value = nextSnapshot.sizeConstraints;
       }
       if (!shallowEqual(signals.icon.peek(), nextSnapshot.icon)) {
@@ -223,6 +237,9 @@ export function createReactiveWindow(
       }
       if (!shallowEqual(signals.interaction.peek(), nextSnapshot.interaction)) {
         signals.interaction.value = nextSnapshot.interaction;
+      }
+      if (!shallowEqual(signals.decoration.peek(), nextSnapshot.decoration)) {
+        signals.decoration.value = nextSnapshot.decoration;
       }
     },
     updateManagedWindow(state: ManagedWindowState) {

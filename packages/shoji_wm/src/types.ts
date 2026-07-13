@@ -9,12 +9,57 @@ export interface WaylandWindowSnapshot {
   readonly isMaximized: boolean;
   readonly isFullscreen: boolean;
   readonly isXwayland: boolean;
+  readonly decoration: WindowDecorationState;
   readonly sizeConstraints: WindowSizeConstraints;
   readonly isResizable: boolean;
   readonly isTransient: boolean;
   readonly parentId?: string;
   readonly icon?: WindowIcon;
   readonly interaction: WindowCompositionInteractionSnapshot;
+}
+
+export type WindowDecorationMode = "client" | "server";
+
+export type WindowDecorationProtocol =
+  "xdg-decoration-v1" | "kde-server-decoration" | "xwayland" | "none";
+
+export type WindowDecorationPolicyReason =
+  "initial" | "clientRequest" | "clientUnset" | "metadataChanged" | "reload";
+
+/** Current client/compositor decoration negotiation state. */
+export interface WindowDecorationState {
+  readonly protocol: WindowDecorationProtocol;
+  readonly clientPreference: WindowDecorationMode | null;
+  /** Last mode sent to the client, or the compositor fallback without a negotiation protocol. */
+  readonly configuredMode: WindowDecorationMode;
+  /** Mode acknowledged and committed by the client. */
+  readonly mode: WindowDecorationMode;
+}
+
+/** Input passed to the synchronous decoration policy resolver. */
+export interface WindowDecorationContext {
+  readonly protocol: WindowDecorationProtocol;
+  readonly clientPreference: WindowDecorationMode | null;
+  readonly canNegotiate: boolean;
+  readonly reason: WindowDecorationPolicyReason;
+}
+
+export interface WindowDecorationDecision {
+  readonly mode: WindowDecorationMode;
+}
+
+export type WindowDecorationResolver = (
+  window: WaylandWindow,
+  context: WindowDecorationContext,
+) => WindowDecorationDecision;
+
+export interface CompositorWindowDecorationController {
+  /**
+   * Register the policy that selects CSD (`client`) or SSD (`server`). The
+   * resolver runs when the client preference or relevant window metadata
+   * changes and during config reload.
+   */
+  configure(resolver: WindowDecorationResolver): void;
 }
 
 export type WaylandLayerKind = "background" | "bottom" | "top" | "overlay";
@@ -154,6 +199,8 @@ export interface WaylandWindow {
   readonly isMaximized: import("./signals").ReadonlySignal<boolean>;
   /** `true` when the window is fullscreen. / ウィンドウがフルスクリーンのとき `true`。 */
   readonly isFullscreen: import("./signals").ReadonlySignal<boolean>;
+  /** Reactive effective CSD/SSD negotiation state. */
+  readonly decoration: import("./signals").ReadonlySignal<WindowDecorationState>;
   /** Min/max size constraints as reported by the client. / クライアントが報告する最小・最大サイズ制約。 */
   readonly sizeConstraints: import("./signals").ReadonlySignal<WindowSizeConstraints>;
   /** `false` when the client has disabled interactive resize. / クライアントがインタラクティブリサイズを無効にしているとき `false`。 */
@@ -1828,15 +1875,22 @@ export interface ManagedWindowProps extends ComponentProps {
  * @example Inside a WindowBorder / WindowBorder の内側
  * ```tsx
  * <ManagedWindow rect={...} zIndex={...}>
- *   <WindowBorder style={{ borderRadius: 8 }}>
- *     <ClientWindow style={{ borderRadius: 8 }} />
+ *   <WindowBorder
+ *     style={{ border: { px: 1, color: "#ffffff20" }, borderRadius: 8 }}
+ *   >
+ *     <ClientWindow />
  *   </WindowBorder>
  * </ManagedWindow>
  * ```
+ *
+ * A bare ClientWindow preserves the complete client-owned surface, including
+ * CSD shadows and transparent resize margins. To crop it, wrap it in an SSD
+ * container with a `border` (or explicit `overflow: "hidden"`).
+ * 素の ClientWindow は CSD の影や透明なリサイズマージンを含む、クライアント所有の
+ * サーフェス全体を保持します。切り取る場合は `border`（または明示的な
+ * `overflow: "hidden"`）を持つ SSD コンテナで囲みます。
  */
 export interface ClientWindowProps extends ComponentProps {
-  /** Clip / style applied to the client surface (typically `borderRadius`). / クライアントサーフェスへのクリップ・スタイル（通常は `borderRadius`）。 */
-  style?: SSDStyle;
   id?: string;
   children?: never;
 }
@@ -1856,7 +1910,7 @@ export type WindowProps = ClientWindowProps;
  *   style={{ borderRadius: 8, border: { px: 1, color: "#ffffff20" } }}
  *   interaction={{ resizeHitArea: { edgePx: 4, cornerPx: 8 } }}
  * >
- *   <ClientWindow style={{ borderRadius: 8 }} />
+ *   <ClientWindow />
  * </WindowBorder>
  * ```
  */
@@ -2310,6 +2364,8 @@ export interface CompositorWindowController {
    * Set to `null` (the default) to leave windows undecorated.
    */
   composition: WindowCompositionFunction | null;
+  /** Client/server-side window decoration negotiation policy. */
+  readonly decoration: CompositorWindowDecorationController;
   /**
    * Request keyboard focus for `window`. The compositor raises it, updates
    * keyboard focus, and emits the usual focus-changed notifications — so

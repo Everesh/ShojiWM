@@ -114,6 +114,14 @@ import type {
   CompositorDefinition,
   CompositorEffectConfig,
   CompositorWindowController,
+  CompositorWindowDecorationController,
+  WindowDecorationContext,
+  WindowDecorationDecision,
+  WindowDecorationMode,
+  WindowDecorationPolicyReason,
+  WindowDecorationProtocol,
+  WindowDecorationResolver,
+  WindowDecorationState,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -177,6 +185,10 @@ import { WORKSPACE_CONTROLLER } from "./workspace";
 import { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 import { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 import { CURSOR_CONTROLLER, takePendingCursorConfig } from "./cursor";
+import {
+  WINDOW_DECORATION_CONTROLLER,
+  resolveWindowDecorationDecision,
+} from "./window-decoration";
 import { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
 import {
   PROCESS_CONTROLLER,
@@ -329,6 +341,10 @@ export {
   takePendingWorkspaceConfig,
 } from "./workspace";
 export { LAYER_CONTROLLER, updateLayerSnapshots } from "./layer";
+export {
+  WINDOW_DECORATION_CONTROLLER,
+  resolveWindowDecorationDecision,
+} from "./window-decoration";
 export { DEBUG_CONTROLLER, takePendingDebugConfig } from "./debug";
 export { ENV_CONTROLLER, drainPendingEnvUpdates } from "./env";
 export {
@@ -549,6 +565,14 @@ export type {
   SurfacePolicy,
   SurfacePolicyTarget,
   CompositorWindowController,
+  CompositorWindowDecorationController,
+  WindowDecorationContext,
+  WindowDecorationDecision,
+  WindowDecorationMode,
+  WindowDecorationPolicyReason,
+  WindowDecorationProtocol,
+  WindowDecorationResolver,
+  WindowDecorationState,
   WindowPosition,
   WindowSize,
   WindowSizeConstraints,
@@ -722,8 +746,10 @@ export const ShaderEffect =
  * ```tsx
  * COMPOSITOR.window.composition = (window) => (
  *   <ManagedWindow rect={window.position} zIndex={getZIndex(window)}>
- *     <WindowBorder style={{ borderRadius: 8 }}>
- *       <ClientWindow style={{ borderRadius: 8 }} />
+ *     <WindowBorder
+ *       style={{ border: { px: 1, color: "#ffffff20" }, borderRadius: 8 }}
+ *     >
+ *       <ClientWindow />
  *     </WindowBorder>
  *   </ManagedWindow>
  * );
@@ -733,15 +759,19 @@ export const ManagedWindow =
   defineIntrinsicComponent<ManagedWindowProps>("ManagedWindow");
 
 /**
- * Renders the Wayland client's actual surface buffer. Must be placed inside
- * `<ManagedWindow/>`. Leaf node — does not accept children.
+ * Renders the Wayland client's complete surface tree. Must be placed inside
+ * `<ManagedWindow/>`. Leaf node — does not accept children. A bare
+ * `<ClientWindow/>` preserves client-owned CSD shadows and resize margins;
+ * wrapping it in an SSD container with a border applies that container's clip.
  * Wayland クライアントの実際のサーフェスバッファを描画します。
- * `<ManagedWindow/>` の内側に配置する必要があります。子要素は受け付けません。
+ * `<ManagedWindow/>` の内側に配置する必要があります。子要素は受け付けません。素の
+ * `<ClientWindow/>` は CSD の影やリサイズマージンを保持し、border を持つ SSD
+ * コンテナで囲んだ場合だけ、そのコンテナのクリップが適用されます。
  *
  * @example
  * ```tsx
  * <ManagedWindow rect={...}>
- *   <ClientWindow style={{ borderRadius: 8 }} />
+ *   <ClientWindow />
  * </ManagedWindow>
  * ```
  */
@@ -763,7 +793,7 @@ export const Window = ClientWindow;
  *   style={{ borderRadius: 8, border: { px: 1, color: "#ffffff20" } }}
  *   interaction={{ resizeHitArea: { edgePx: 4, cornerPx: 8 } }}
  * >
- *   <ClientWindow style={{ borderRadius: 8 }} />
+ *   <ClientWindow />
  * </WindowBorder>
  * ```
  */
@@ -772,6 +802,7 @@ export const WindowBorder =
 
 const WINDOW_CONTROLLER: CompositorWindowController = {
   composition: null,
+  decoration: WINDOW_DECORATION_CONTROLLER,
   focus(window) {
     window.focus();
   },

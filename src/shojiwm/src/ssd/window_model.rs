@@ -32,12 +32,74 @@ pub struct WaylandWindowSnapshot {
     pub is_maximized: bool,
     pub is_fullscreen: bool,
     pub is_xwayland: bool,
+    pub decoration: WindowDecorationStateSnapshot,
     pub size_constraints: WindowSizeConstraintsSnapshot,
     pub is_resizable: bool,
     pub is_transient: bool,
     pub parent_id: Option<String>,
     pub icon: Option<WindowIconSnapshot>,
     pub interaction: DecorationInteractionSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowDecorationModeSnapshot {
+    Client,
+    Server,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowDecorationProtocolSnapshot {
+    XdgDecorationV1,
+    KdeServerDecoration,
+    Xwayland,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowDecorationPolicyReasonSnapshot {
+    Initial,
+    ClientRequest,
+    ClientUnset,
+    MetadataChanged,
+    Reload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowDecorationStateSnapshot {
+    pub protocol: WindowDecorationProtocolSnapshot,
+    pub client_preference: Option<WindowDecorationModeSnapshot>,
+    pub configured_mode: WindowDecorationModeSnapshot,
+    pub mode: WindowDecorationModeSnapshot,
+}
+
+impl Default for WindowDecorationStateSnapshot {
+    fn default() -> Self {
+        Self {
+            protocol: WindowDecorationProtocolSnapshot::None,
+            client_preference: None,
+            configured_mode: WindowDecorationModeSnapshot::Server,
+            mode: WindowDecorationModeSnapshot::Server,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowDecorationPolicyContextSnapshot {
+    pub protocol: WindowDecorationProtocolSnapshot,
+    pub client_preference: Option<WindowDecorationModeSnapshot>,
+    pub can_negotiate: bool,
+    pub reason: WindowDecorationPolicyReasonSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowDecorationDecisionSnapshot {
+    pub mode: WindowDecorationModeSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -709,6 +771,7 @@ impl ShojiWM {
             is_maximized,
             is_fullscreen,
             is_xwayland: false,
+            decoration: self.window_decoration_snapshot(toplevel.wl_surface(), false),
             size_constraints,
             is_resizable,
             is_transient,
@@ -734,6 +797,7 @@ impl ShojiWM {
                 is_maximized: false,
                 is_fullscreen: false,
                 is_xwayland: false,
+                decoration: WindowDecorationStateSnapshot::default(),
                 size_constraints: WindowSizeConstraintsSnapshot::default(),
                 is_resizable: true,
                 is_transient: false,
@@ -803,6 +867,10 @@ impl ShojiWM {
             is_maximized: false,
             is_fullscreen: false,
             is_xwayland: true,
+            decoration: WindowDecorationStateSnapshot {
+                protocol: WindowDecorationProtocolSnapshot::Xwayland,
+                ..WindowDecorationStateSnapshot::default()
+            },
             size_constraints,
             is_resizable,
             is_transient,

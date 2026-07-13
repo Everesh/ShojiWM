@@ -415,9 +415,15 @@ pub struct WindowDecorationState {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ContentClip {
-    // Reserved client slot geometry. This controls where the client is placed.
+    // Reserved client slot geometry. This is the xdg window-geometry origin
+    // used to place the client surface tree, independently of whether the
+    // surface is clipped.
     pub rect: Rectangle<i32, Logical>,
     pub rect_precise: PreciseLogicalRect,
+    // True only when an ancestor SSD explicitly clips its children. A bare
+    // WindowSlot is placement metadata and must not crop client-owned CSD,
+    // shadows, or resize margins outside xdg_surface.window_geometry.
+    pub clips_surface: bool,
     // Ancestor clip mask geometry. This controls how the client is clipped.
     pub mask_rect: Rectangle<i32, Logical>,
     pub mask_rect_precise: PreciseLogicalRect,
@@ -514,6 +520,17 @@ impl DecorationEvaluator for DecorationRuntimeEvaluator {
         match self {
             Self::Static(evaluator) => evaluator.evaluate_window_preview(window, now_ms),
             Self::Node(evaluator) => evaluator.evaluate_window_preview(window, now_ms),
+        }
+    }
+
+    fn window_decoration_policy(
+        &self,
+        window: &WaylandWindowSnapshot,
+        context: &super::WindowDecorationPolicyContextSnapshot,
+    ) -> Result<super::WindowDecorationDecisionSnapshot, DecorationEvaluationError> {
+        match self {
+            Self::Static(evaluator) => evaluator.window_decoration_policy(window, context),
+            Self::Node(evaluator) => evaluator.window_decoration_policy(window, context),
         }
     }
 
@@ -5511,18 +5528,17 @@ fn normal_border_inner_rect_precise(
     (rect.width.raw() > 0 && rect.height.raw() > 0).then(|| precise_rect_from_resolved(rect))
 }
 
-fn node_child_rounded_mask_resolved(
+fn node_child_mask_resolved(
     node: &super::ComputedDecorationNode,
 ) -> Option<crate::ssd::ResolvedDecorationClip> {
     fit_children_inner_clip_resolved(node)
         .or(node.resolved_effective_clip)
-        .filter(|clip| clip.radius.raw() > 0)
 }
 
 fn slot_content_clip_for_node(
     node: &super::ComputedDecorationNode,
     nearest_border: Option<(i32, i32)>,
-    nearest_rounded_mask: Option<crate::ssd::ResolvedDecorationClip>,
+    nearest_mask: Option<crate::ssd::ResolvedDecorationClip>,
     shared_edges: &impl SharedEdgeGeometryLookup,
 ) -> Option<ContentClip> {
     let next_border = if matches!(node.kind, super::DecorationNodeKind::WindowBorder) {
@@ -5538,7 +5554,14 @@ fn slot_content_clip_for_node(
     } else {
         nearest_border
     };
-    let next_rounded_mask = node_child_rounded_mask_resolved(node).or(nearest_rounded_mask);
+    // WindowSlot is only the placement anchor for the client surface. Its own
+    // style must never manufacture a clip: clipping belongs to an ancestor
+    // SSD container and reaches the slot through `nearest_mask`.
+    let next_mask = if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
+        nearest_mask
+    } else {
+        node_child_mask_resolved(node).or(nearest_mask)
+    };
 
     if matches!(node.kind, super::DecorationNodeKind::WindowSlot) {
         let (_border_width, _border_radius) = next_border.unwrap_or((0, 0));
@@ -5551,7 +5574,8 @@ fn slot_content_clip_for_node(
                 });
         let slot_rect = node.resolved_rect;
         let slot_rect_precise = precise_rect_from_resolved(slot_rect);
-        let mask = next_rounded_mask.unwrap_or(inherited_clip);
+        let clips_surface = next_mask.is_some();
+        let mask = next_mask.unwrap_or(inherited_clip);
         let mask_rect_precise = precise_rect_from_resolved(mask.rect);
         let corner_radii_precise = if mask.radius.raw() > 0 {
             [mask.radius.to_f32().max(0.0); 4]
@@ -5569,6 +5593,7 @@ fn slot_content_clip_for_node(
                     .into(),
             ),
             rect_precise: slot_rect_precise,
+            clips_surface,
             mask_rect: Rectangle::new(
                 Point::from((mask.rect.x.round_to_i32(), mask.rect.y.round_to_i32())),
                 (
@@ -5590,7 +5615,7 @@ fn slot_content_clip_for_node(
     }
 
     node.children.iter().find_map(|child| {
-        slot_content_clip_for_node(child, next_border, next_rounded_mask, shared_edges)
+        slot_content_clip_for_node(child, next_border, next_mask, shared_edges)
     })
 }
 
@@ -5809,6 +5834,7 @@ fn translate_content_clip(clip: ContentClip, dx: i32, dy: i32) -> ContentClip {
     ContentClip {
         rect: translate_smithay_rect(clip.rect, dx, dy),
         rect_precise: translate_precise_rect(clip.rect_precise, dx, dy),
+        clips_surface: clip.clips_surface,
         mask_rect: translate_smithay_rect(clip.mask_rect, dx, dy),
         mask_rect_precise: translate_precise_rect(clip.mask_rect_precise, dx, dy),
         ..clip
@@ -8581,6 +8607,72 @@ mod tests {
     }
 
     #[test]
+    fn bare_window_slot_does_not_clip_client_surface() {
+        let tree = DecorationTree::new(DecorationNode::new(DecorationNodeKind::WindowSlot));
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
+            .expect("layout should succeed");
+        let shared_edges = build_shared_edge_geometry_map(&layout);
+        let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
+            .expect("window slot placement should exist");
+
+        assert!(!clip.clips_surface);
+    }
+
+    #[test]
+    fn window_slot_style_cannot_clip_client_surface() {
+        let tree = DecorationTree::new(
+            DecorationNode::new(DecorationNodeKind::WindowSlot).with_style(DecorationStyle {
+                overflow: Some(Overflow::Hidden),
+                border: Some(BorderStyle {
+                    width: 2,
+                    color: Color::WHITE,
+                }),
+                border_radius: Some(12),
+                ..Default::default()
+            }),
+        );
+        let layout = tree
+            .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
+            .expect("layout should succeed");
+        let shared_edges = build_shared_edge_geometry_map(&layout);
+        let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
+            .expect("window slot placement should exist");
+
+        assert!(!clip.clips_surface);
+    }
+
+    #[test]
+    fn bordered_box_clips_client_surface_unless_overflow_is_visible() {
+        let make_tree = |overflow| {
+            DecorationTree::new(
+                DecorationNode::new(DecorationNodeKind::Box(BoxNode::default()))
+                    .with_style(DecorationStyle {
+                        border: Some(BorderStyle {
+                            width: 2,
+                            color: Color::WHITE,
+                        }),
+                        border_radius: Some(12),
+                        overflow,
+                        ..Default::default()
+                    })
+                    .with_children(vec![DecorationNode::new(DecorationNodeKind::WindowSlot)]),
+            )
+        };
+
+        for (overflow, expected) in [(None, true), (Some(Overflow::Visible), false)] {
+            let tree = make_tree(overflow);
+            let layout = tree
+                .layout_for_client_with_scale(LogicalRect::new(50, 100, 800, 600), 1.25)
+                .expect("layout should succeed");
+            let shared_edges = build_shared_edge_geometry_map(&layout);
+            let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
+                .expect("window slot placement should exist");
+            assert_eq!(clip.clips_surface, expected);
+        }
+    }
+
+    #[test]
     fn content_clip_matches_window_slot_not_border_inner() {
         let tree = DecorationTree::new(
             DecorationNode::new(DecorationNodeKind::WindowBorder)
@@ -8623,6 +8715,7 @@ mod tests {
         assert_eq!(clip.rect.size.h, slot.height);
         assert_eq!(clip.radius, 0);
         assert_eq!(clip.radius_precise, 0.0);
+        assert!(clip.clips_surface);
         assert!(clip.corner_radii.iter().all(|radius| *radius > 0));
         assert!(clip.corner_radii_precise.iter().all(|radius| *radius > 0.0));
     }
@@ -8649,6 +8742,7 @@ mod tests {
         let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
             .expect("content clip should exist");
 
+        assert!(clip.clips_surface);
         assert!(clip.corner_radii.iter().all(|radius| *radius > 0));
         assert!(clip.corner_radii_precise.iter().all(|radius| *radius > 0.0));
     }
@@ -8678,6 +8772,7 @@ mod tests {
         let clip = content_clip_for_layout(&tree, &layout, &shared_edges)
             .expect("content clip should exist");
 
+        assert!(clip.clips_surface);
         assert_eq!(clip.radius, 0);
         assert!(clip.corner_radii.iter().all(|radius| *radius > 0));
         assert!(clip.corner_radii_precise.iter().all(|radius| *radius > 0.0));
