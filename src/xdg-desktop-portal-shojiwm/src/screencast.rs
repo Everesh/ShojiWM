@@ -102,6 +102,38 @@ fn encode_restore_data(selection: &Selection) -> Value<'static> {
     ))
 }
 
+/// Attach `restore_data` + granted `persist_mode` to Start results when the
+/// app asked for persistence. The portal frontend stores the blob in its
+/// permission store and hands the app a restore token in our stead.
+fn append_restore_results(
+    results: &mut HashMap<String, OwnedValue>,
+    persist_mode: u32,
+    selection: &Selection,
+) {
+    if persist_mode == 0 {
+        return;
+    }
+    match OwnedValue::try_from(encode_restore_data(selection)) {
+        Ok(blob) => {
+            results
+                .insert(
+                    "persist_mode"
+                        .to_string(), 
+                    OwnedValue::from(
+                        persist_mode,
+                    ),
+                );
+            results
+                .insert(
+                    "restore_data"
+                        .to_string(),
+                    blob,
+                );
+        }
+        Err(e) => tracing::warn!("failed to encode restore_data: {e}"),
+    }
+}
+
 /// Decoded restore request from a `(suv)` restore_data option.
 struct RestoreRequest {
     kind: String,
