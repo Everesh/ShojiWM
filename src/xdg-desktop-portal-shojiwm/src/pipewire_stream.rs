@@ -224,6 +224,27 @@ struct AppState {
     /// kicks from `on_add_buffer` so we don't capture into a paused stream.
     is_streaming
     : bool,
+    /// True from a mid-stream Format renegotiation until the replacement
+    /// buffer pool starts arriving. While set, no captures are kicked and no
+    /// frames are queued: pushing frames into a stream whose consumer is
+    /// mid-way through tearing down one buffer pool and importing the next
+    /// is exactly the window where Chromium's capture device has been seen
+    /// to stall (KWin's paced/coalesced delivery never renegotiates under
+    /// fire, and KDE doesn't exhibit the stall).
+    renegotiating: bool,
+    /// Frame interval derived from the negotiated `maxFramerate`. `None`
+    /// until a format with a usable framerate is negotiated; frames are then
+    /// queued no faster than this, matching KWin. Capture still runs at
+    /// vblank pace — early frames are held in `spare_buffer` and recopied
+    /// rather than queued.
+    frame_interval: Option<std::time::Duration>,
+    last_queue_at: Option<std::time::Instant>,
+    /// A dequeued-but-unqueued pw_buffer held back by the framerate
+    /// throttle. Reused for the next capture instead of dequeuing another
+    /// slot, so the pool never starves while throttling.
+    spare_buffer: Option<usize>,
+    /// Monotonic per-stream frame counter for `spa_meta_header.seq`.
+    frame_sequence: u64,
 
     // Same dying / stop_flag pattern as toplevel_stream.rs — once the
     // consumer disconnects we short-circuit every callback so we don't
@@ -325,6 +346,11 @@ fn run(
         frames_completed: 0,
         last_log_at: std::time::Instant::now(),
         is_streaming: false,
+        renegotiating: false,
+        frame_interval: None,
+        last_queue_at: None,
+        spare_buffer: None,
+        frame_sequence: 0,
         dying: false,
         stop_flag: Some(stop.clone()),
     };
@@ -753,6 +779,25 @@ impl AppState {
         let Some(param) = param else {
             return;
         };
+        // A Format change while a buffer pool exists means the consumer is
+        // renegotiating mid-stream (e.g. the DMA-BUF → SHM downgrade after a
+        // failed cross-GPU import). Quiesce the capture cycle until the new
+        // pool arrives in `on_add_buffer` — continuing to queue frames into
+        // the half-torn-down stream races the consumer's own rebuild.
+        if !self.pw_buffer_slots.is_empty() && !self.renegotiating {
+            tracing::info!(
+                "screencast: format renegotiation started; \
+                pausing capture until the new buffer pool arrives"
+            );
+            self.renegotiating = true;
+        }
+        self.frame_interval = parse_pipewire_max_framerate(param)
+            .filter(|framerate| framerate.num > 0 && framerate.denom > 0)
+            .map(|framerate| {
+                std::time::Duration::from_secs_f64(
+                    framerate.denom as f64 / framerate.num as f64,
+                )
+            });
         let Some(modifier_param) = parse_pipewire_modifier_param(param) else {
             // A format WITHOUT a modifier property means the consumer wants
             // mappable memory, not DMA-BUF. OBS does this after a failed
@@ -869,6 +914,11 @@ impl AppState {
             new,
             pw::stream::StreamState::Streaming,
         );
+        // Entering Streaming means the renegotiation (if any) has concluded
+        // from the graph's point of view — never leave the quiesce flag stuck.
+        if self.is_streaming {
+            self.renegotiating = false;
+        }
         // Kick a capture whenever we (re-)enter Streaming with no frame in
         // flight. A one-shot latch is not enough here: when the consumer
         // renegotiates buffers (Chromium switches its preview consumer for the
@@ -896,6 +946,9 @@ impl AppState {
     }
 
     fn on_add_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
+        // The replacement pool from a renegotiation is arriving — capture may
+        // resume (the kick at the end of this function restarts the cycle).
+        self.renegotiating = false;
         let negotiated_data_types = unsafe {
             let buf = (*buffer).buffer;
             if buf.is_null() {
@@ -951,6 +1004,7 @@ impl AppState {
             chunk.offset = 0;
             chunk.stride = stride;
             chunk.size = size as u32;
+            chunk.flags = spa_sys::SPA_CHUNK_FLAG_NONE as i32;
         }
 
         let key = buffer as usize;
@@ -1147,6 +1201,11 @@ impl AppState {
         if !self.is_streaming {
             return;
         }
+        // Likewise while a format renegotiation is in flight: the cycle
+        // restarts from `on_add_buffer` when the replacement pool arrives.
+        if self.renegotiating {
+            return;
+        }
         let (Some(manager), Some(output)) = (self.manager.as_ref(), self.target_output.as_ref())
         else {
             tracing::warn!("kick_capture: missing manager or output");
@@ -1173,11 +1232,18 @@ impl AppState {
         if self.dying {
             return;
         }
-        // Dequeue a PW buffer to fill.
+        // Reuse a throttle-held buffer if one exists, else dequeue a fresh
+        // PW buffer to fill.
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
+        let pw_buf = match self.spare_buffer.take() {
+            Some(key) => key as *mut pw::sys::pw_buffer,
+            None => unsafe { 
+                stream
+                    .dequeue_raw_buffer()
+            },
+        };
         if pw_buf.is_null() {
             // Consumer hasn't returned a buffer yet — all advertised slots
             // are in flight. Demote to debug (frequent under slow consumers
@@ -1224,34 +1290,65 @@ impl AppState {
         // without queueing: queueing into a paused driver stream is exactly the
         // wake-up that restarts the pause/rebuild churn. The buffer stays dequeued
         // until the next pool rebuild, which is fine.
+        // If the frame landed before the negotiated frame interval elapsed,
+        // hold the buffer in `spare_buffer` instead of queueing — the next
+        // capture recopies into it, so the consumer sees at most the
+        // negotiated framerate while capture stays vblank-paced.
+        let throttled = match (
+            self.frame_interval,
+            self.last_queue_at,
+        ) {
+            (
+                Some(
+                    interval,
+                ),
+                Some(
+                    last_queue_at,
+                ),
+            ) => last_queue_at
+                .elapsed() < interval,
+            _ => false,
+        };
         if let Some(stream) = self.stream.clone()
             && pending.pw_buffer != 0
             && !self.dying
             && self.is_streaming
+            && !self.renegotiating
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
-            let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
-            unsafe {
-                if !pw_buf.is_null()
-                    && !(*pw_buf).buffer.is_null()
-                    && (*(*pw_buf).buffer).n_datas > 0
-                {
-                    let datas = std::slice::from_raw_parts_mut(
-                        (*(*pw_buf).buffer).datas,
-                        (*(*pw_buf).buffer).n_datas as usize,
-                    );
-                    let data = &mut datas[0];
-                    let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
-                    let chunk = &mut *data.chunk;
-                    chunk.offset = 0;
-                    chunk.stride = stride;
-                    chunk.size = (stride as u32) * self.spec.height;
+            if throttled {
+                self.spare_buffer = Some(
+                    pending.pw_buffer
+                );
+            } else {
+                let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
+                unsafe {
+                    if !pw_buf.is_null()
+                        && !(*pw_buf).buffer.is_null()
+                        && (*(*pw_buf).buffer).n_datas > 0
+                    {
+                        let datas = std::slice::from_raw_parts_mut(
+                            (*(*pw_buf).buffer).datas,
+                            (*(*pw_buf).buffer).n_datas as usize,
+                        );
+                        let data = &mut datas[0];
+                        let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
+                        let chunk = &mut *data.chunk;
+                        chunk.offset = 0;
+                        chunk.stride = stride;
+                        chunk.size = (stride as u32) * self.spec.height;
+                        chunk.flags = spa_sys::SPA_CHUNK_FLAG_NONE as i32;
+                        fill_header_meta(pw_buf, self.frame_sequence);
+                    }
+                    stream.queue_raw_buffer(pw_buf);
                 }
-                stream.queue_raw_buffer(pw_buf);
+                self.frame_sequence += 1;
+                self.last_queue_at = Some(
+                    std::time::Instant::now()
+                );
+                self.frames_completed += 1;
             }
         }
-
-        self.frames_completed += 1;
         if self.last_log_at.elapsed() >= std::time::Duration::from_secs(2) {
             let elapsed = self.last_log_at.elapsed().as_secs_f64();
             let effective_fps = self.frames_completed as f64 / elapsed.max(0.001);
