@@ -55,6 +55,11 @@ pub struct ScreenCast {
     /// Per-session `cursor_mode & EMBEDDED != 0`. Filled by SelectSources,
     /// consumed by Start to configure the streaming pipeline.
     cursor_visibility: Mutex<HashMap<String, bool>>,
+    /// Per-session `persist_mode` requested at SelectSources. When non-zero,
+    /// Start returns `restore_data` so the portal frontend can hand the app a
+    /// restore token — that's what lets Chromium's repeated Go Live sessions
+    /// (and OBS on relaunch) skip the picker after the first approval.
+    persist_modes: Mutex<HashMap<String, u32>>,
     thumbnail_tx: tokio::sync::mpsc::UnboundedSender<ThumbnailUpdate>,
 }
 
@@ -68,6 +73,9 @@ impl ScreenCast {
             sessions: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
             cursor_visibility: Mutex::new(HashMap::new()),
+            persist_modes: Mutex::new(
+                HashMap::new()
+            ),
             thumbnail_tx,
         }
     }
