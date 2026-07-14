@@ -86,7 +86,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{
+    AsFd,
+    AsRawFd,
+    BorrowedFd, 
+    OwnedFd, 
+    RawFd,
+};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -183,6 +189,15 @@ struct AppState {
     dmabuf_modifiers: Vec<DrmModifier>,
     negotiated_dmabuf_modifier: Option<DrmModifier>,
     dmabuf_failed: bool,
+    /// Whether the CURRENTLY negotiated format carries a DMA-BUF modifier.
+    /// Buffer allocation must follow this: a modifier-less format means the
+    /// consumer expects mappable memory, and serving DMA-BUF anyway puts
+    /// OBS into a renegotiation livelock. Unlike `dmabuf_failed` this is NOT
+    /// a latch — Chromium swaps consumers mid-session (preview → WebRTC
+    /// capturer) and the next consumer may negotiate DMA-BUF again, so the
+    /// advertised formats always stay broad and this just tracks the latest
+    /// negotiation result.
+    format_has_modifier: bool,
 
     // PipeWire stream (cloneable Rc handle)
     stream: Option<pw::stream::StreamRc>,
@@ -226,6 +241,11 @@ struct PendingFrame {
 struct BufferSlot {
     wl_buffer: wl_buffer::WlBuffer,
     _storage: BufferSlotStorage,
+    /// The fd handed to PipeWire in `spa_data.fd`. libpipewire does not take
+    /// ownership of fds the client fills in under ALLOC_BUFFERS, so it must
+    /// stay owned here and drop with the slot — otherwise every buffer-pool
+    /// rebuild leaks one fd per buffer.
+    _pw_fd: OwnedFd,
 }
 
 enum BufferSlotStorage {
@@ -291,6 +311,7 @@ fn run(
         dmabuf_modifiers: Vec::new(),
         negotiated_dmabuf_modifier: None,
         dmabuf_failed: false,
+        format_has_modifier: false,
         stream: None,
         pw_buffer_slots: HashMap::new(),
         pw_buffer_stride: HashMap::new(),
@@ -733,8 +754,34 @@ impl AppState {
             return;
         };
         let Some(modifier_param) = parse_pipewire_modifier_param(param) else {
+            // A format WITHOUT a modifier property means the consumer wants
+            // mappable memory, not DMA-BUF. OBS does this after a failed
+            // GL import: it drops the modifier and renegotiates. If we keep
+            // serving DMA-BUF anyway (stale `negotiated_dmabuf_modifier`),
+            // OBS fails the import again and renegotiates in a ~20 Hz loop —
+            // each cycle reallocating the whole 8×8 MB buffer pool, which
+            // pegs several cores and leaks GPU memory until the machine dies.
+            // Allocation follows the format:
+            // SHM while this stays negotiated.
+            //
+            // Deliberately NOT a latch, and deliberately no update_params
+            // narrowing the advert to SHM-only: Chromium swaps consumers
+            // mid-session (preview → WebRTC capturer on Go Live), and the
+            // next consumer may offer DMA-BUF formats again. A narrowed
+            // advert makes that negotiation intersect to nothing — the link
+            // then never completes, the stream sits Paused forever, and
+            // vesktop's Go Live dies with endless portal retries.
+            if self.format_has_modifier {
+                tracing::info!(
+                    "screencast: consumer \
+                    negotiated a modifier-less format; allocating SHM buffers"
+                );
+            }
+            self.format_has_modifier = false;
+            self.negotiated_dmabuf_modifier = None;
             return;
         };
+        self.format_has_modifier = true;
 
         if modifier_param.dont_fixate {
             let Some(modifier) = self.choose_working_dmabuf_modifier(&modifier_param.modifiers)
@@ -876,7 +923,7 @@ impl AppState {
         let stride = slot.stride;
         let size = slot.size;
         let data_type = slot.data_type;
-        let fd_for_pw = slot.fd_for_pw.into_raw_fd();
+        let fd_for_pw = slot.fd_for_pw;
         let wl_buf = slot.wl_buffer;
         let storage = slot.storage;
 
@@ -894,7 +941,8 @@ impl AppState {
             let data = &mut datas[0];
             data.type_ = data_type;
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
-            data.fd = fd_for_pw as i64;
+            data.fd = fd_for_pw
+                .as_raw_fd() as i64;
             data.data = std::ptr::null_mut();
             data.maxsize = size as u32;
             data.mapoffset = 0;
@@ -912,6 +960,7 @@ impl AppState {
             BufferSlot {
                 wl_buffer: wl_buf,
                 _storage: storage,
+                _pw_fd: fd_for_pw,
             },
         );
 
@@ -934,7 +983,12 @@ impl AppState {
         let allows_dmabuf = data_types & dmabuf_flag != 0 || data_types == spa_sys::SPA_DATA_DmaBuf;
         let allows_memfd = data_types & memfd_flag != 0 || data_types == spa_sys::SPA_DATA_MemFd;
 
-        if allows_dmabuf && !self.dmabuf_failed {
+        // DMA-BUF is only valid while the negotiated format carries a
+        // modifier; under a modifier-less format the consumer expects
+        // mappable memory even if its Buffers param still allows DmaBuf.
+        if allows_dmabuf 
+            && self.format_has_modifier
+            && !self.dmabuf_failed {
             match self.create_dmabuf_slot() {
                 Ok(Some(slot)) => return Ok(slot),
                 Ok(None) if !allows_memfd => {
@@ -1082,6 +1136,17 @@ impl AppState {
         if self.dying {
             return;
         }
+        // Only capture while the stream is actually Streaming. With no active
+        // consumer the graph pauses our driver node after every cycle; if we
+        // keep capturing and queueing anyway, each queue wakes the node back
+        // up and forces a full buffer-pool rebuild (~each frame). That churn
+        // starves consumers stuck in buffer allocation (OBS never got a first
+        // frame) and, before the fd-ownership fix, leaked one fd per buffer
+        // per rebuild. The Streaming transition in `on_state_changed` restarts
+        // the cycle when a consumer shows up.
+        if !self.is_streaming {
+            return;
+        }
         let (Some(manager), Some(output)) = (self.manager.as_ref(), self.target_output.as_ref())
         else {
             tracing::warn!("kick_capture: missing manager or output");
@@ -1155,9 +1220,14 @@ impl AppState {
         // the right amount, then queue it. Re-check that the buffer still
         // exists in our slot map — PW may have freed it between dequeue and
         // ready (consumer disconnect path).
+        // If the stream left Streaming while this frame was in flight, drop it
+        // without queueing: queueing into a paused driver stream is exactly the
+        // wake-up that restarts the pause/rebuild churn. The buffer stays dequeued
+        // until the next pool rebuild, which is fine.
         if let Some(stream) = self.stream.clone()
             && pending.pw_buffer != 0
             && !self.dying
+            && self.is_streaming
             && self.pw_buffer_slots.contains_key(&pending.pw_buffer)
         {
             let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
