@@ -76,6 +76,21 @@ impl Inner {
         &self,
         session_key: &str,
     ) {
+        // Remove the session FIRST, the stream second. Start() does the
+        // opposite (insert stream, then verify the session still exists), so
+        // every interleaving of a Close racing a Start ends with the stream
+        // dropped exactly once — either here or by Start's verify step.
+        // Chromium's Go Live churns sessions fast enough to Close one while
+        // its Start is still spawning the capture thread; before this
+        // ordering the freshly started stream could land in the map after
+        // cleanup had already run, leaving an unowned PipeWire node that
+        // delivered zero frames to the app forever.
+        self.sessions
+            .lock()
+            .unwrap()
+            .remove(
+                session_key,
+            );
         let stream = self.streams
             .lock()
             .unwrap()
@@ -87,12 +102,6 @@ impl Inner {
         drop(
             stream,
         );
-        self.sessions
-            .lock()
-            .unwrap()
-            .remove(
-                session_key,
-            );
         self.cursor_visibility
             .lock()
             .unwrap()
