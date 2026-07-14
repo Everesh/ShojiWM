@@ -1646,8 +1646,22 @@ fn capture_scene_texture_for_effect(
 
 fn queue_tty_redraws(state: &mut ShojiWM) {
     let gap_threshold_ms = animation_gap_threshold_ms();
+    let renderable_outputs = state
+        .space
+        .outputs()
+        .filter(|output| state.runtime_output_render_enabled(&output.name()))
+        .map(Output::name)
+        .collect::<std::collections::HashSet<_>>();
     for backend in state.tty_backends.values_mut() {
         for surface in backend.surfaces.values_mut() {
+            if !renderable_outputs.contains(&surface.output.name()) {
+                if !surface.frame_pending {
+                    surface.redraw_state = TtyRedrawState::Idle;
+                    surface.queued_at = None;
+                    surface.next_frame_target = None;
+                }
+                continue;
+            }
             let previous_state = surface.redraw_state;
             let tearing_active = surface.tearing_active;
             match surface.redraw_state {
@@ -1747,6 +1761,22 @@ fn queue_tty_redraws(state: &mut ShojiWM) {
     }
 }
 
+fn retire_unmapped_surface(state: &mut ShojiWM, node: DrmNode, crtc: crtc::Handle) {
+    let Some(surface) = state
+        .tty_backends
+        .get_mut(&node)
+        .and_then(|backend| backend.surfaces.get_mut(&crtc))
+    else {
+        return;
+    };
+    if surface.frame_pending {
+        return;
+    }
+    surface.redraw_state = TtyRedrawState::Idle;
+    surface.queued_at = None;
+    surface.next_frame_target = None;
+}
+
 fn render_surface(
     state: &mut ShojiWM,
     loop_handle: &LoopHandle<'_, ShojiWM>,
@@ -1756,13 +1786,18 @@ fn render_surface(
     let frame_started_at = Instant::now();
     timescope::scope!("tty render_surface");
     let spike_threshold_ms = animation_spike_threshold_ms();
-    let output = state
+    let Some(output) = state
         .tty_backends
         .get(&node)
         .and_then(|backend| backend.surfaces.get(&crtc))
         .map(|surface| surface.output.clone())
-        .unwrap();
-    if !state.runtime_output_render_enabled(&output.name()) {
+    else {
+        return Ok(RenderSurfaceOutcome::Skipped);
+    };
+    if !state.runtime_output_render_enabled(&output.name())
+        || state.space.output_geometry(&output).is_none()
+    {
+        retire_unmapped_surface(state, node, crtc);
         return Ok(RenderSurfaceOutcome::Skipped);
     }
     {
@@ -1829,6 +1864,15 @@ fn render_surface(
         timescope::scope!("tty refresh_window_decorations");
         state.refresh_window_decorations_for_output(Some(output.name().as_str()))?;
     }
+    // Output configuration is reactive. Evaluating the TypeScript runtime above can unmap this
+    // output (for example, disabling the internal panel when a dock output appears). Do not carry
+    // the stale DRM render request into scene preparation after that transition.
+    if !state.runtime_output_render_enabled(&output.name())
+        || state.space.output_geometry(&output).is_none()
+    {
+        retire_unmapped_surface(state, node, crtc);
+        return Ok(RenderSurfaceOutcome::Skipped);
+    }
     let decoration_refresh_elapsed_ms =
         decoration_refresh_started_at.elapsed().as_secs_f64() * 1000.0;
     let layer_effects_started_at = Instant::now();
@@ -1838,6 +1882,11 @@ fn render_surface(
         state.refresh_popup_effects_for_output(output.name().as_str())?;
     }
     let layer_effects_elapsed_ms = layer_effects_started_at.elapsed().as_secs_f64() * 1000.0;
+
+    let Some(output_geo) = state.space.output_geometry(&output) else {
+        retire_unmapped_surface(state, node, crtc);
+        return Ok(RenderSurfaceOutcome::Skipped);
+    };
 
     let redraw_state = state
         .tty_backends
@@ -1944,7 +1993,6 @@ fn render_surface(
         timescope::scope!("tty render prep");
         let should_capture_blink = state.damage_blink_enabled;
         let blink_visible = state.damage_blink_rects_for_output(&output).to_vec();
-        let output_geo = state.space.output_geometry(&output).unwrap();
         let has_visible_x11_chrome = output_has_visible_x11_chrome(state, &output);
         let mut extra_damage = state.pending_decoration_damage.clone();
         if std::env::var_os("SHOJI_TRANSFORM_SNAPSHOT_DEBUG").is_some() && !extra_damage.is_empty()
@@ -2054,7 +2102,6 @@ fn render_surface(
         let cursor_started_at = Instant::now();
 
         let pointer_pos = seat.get_pointer().unwrap().current_location();
-        let output_geo = space.output_geometry(&output).unwrap();
         let scale = Scale::from(output.current_scale().fractional_scale());
         let windows_top_to_bottom = windows_top_to_bottom_for_output;
         let all_windows: Vec<_> = space.elements().cloned().collect();
